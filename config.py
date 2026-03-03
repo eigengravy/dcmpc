@@ -122,32 +122,98 @@ cs.store(name="eval", node=EvalConfig)
 #####################
 
 
+# --- Existing ablations (updated for quantizer field) ---
+
+
 @dataclass
 class ContinuousMSEConfig(DCMPCConfig):
-    """Config for Continuous+MSE experiment"""
+    """Continuous latent (no quantization) + MSE consistency"""
 
-    """Flag to turn FSQ off"""
-    use_fsq: bool = False
-    """Which loss function to use for consistency loss?"""
-    consistency_loss: str = "mse"  # "cross-entropy", "mse", "cosine"
+    quantizer: str = "none"
+    consistency_loss: str = "mse"
 
 
 @dataclass
 class DiscreteMSEConfig(DCMPCConfig):
-    """Config for Discrete+MSE experiment"""
+    """FSQ discrete latent + MSE consistency"""
 
-    """Which loss function to use for consistency loss?"""
-    consistency_loss: str = "mse"  # "cross-entropy", "mse", "cosine"
+    consistency_loss: str = "mse"
 
 
 @dataclass
 class DiscreteCEDetConfig(DCMPCConfig):
-    """Config for Discrete+CE+Det experiment"""
+    """FSQ discrete latent + CE with deterministic (inner-product) logits"""
 
-    """Predict logits with mse between pred and codebook"""
-    ce_logits_mode: str = "mse"  # "standard", cosine", "mse"
+    ce_logits_mode: str = "mse"
 
 
 cs.store(name="continuous_mse", group="agent", node=ContinuousMSEConfig)
 cs.store(name="discrete_mse", group="agent", node=DiscreteMSEConfig)
 cs.store(name="discrete_ce_det", group="agent", node=DiscreteCEDetConfig)
+
+
+# --- DDCL ablations ---
+
+
+@dataclass
+class DDCLCEConfig(DCMPCConfig):
+    """DDCL quantizer + cross-entropy consistency"""
+
+    quantizer: str = "ddcl"
+    consistency_loss: str = "cross-entropy"
+
+
+@dataclass
+class DDCLMSEConfig(DCMPCConfig):
+    """DDCL quantizer + MSE consistency"""
+
+    quantizer: str = "ddcl"
+    consistency_loss: str = "mse"
+
+
+cs.store(name="ddcl_ce", group="agent", node=DDCLCEConfig)
+cs.store(name="ddcl_mse", group="agent", node=DDCLMSEConfig)
+
+
+# --- VQ ablations ---
+
+
+@dataclass
+class VQCEConfig(DCMPCConfig):
+    """VQ quantizer + cross-entropy consistency"""
+
+    quantizer: str = "vq"
+    consistency_loss: str = "cross-entropy"
+
+
+@dataclass
+class VQMSEConfig(DCMPCConfig):
+    """VQ quantizer + MSE consistency"""
+
+    quantizer: str = "vq"
+    consistency_loss: str = "mse"
+
+
+cs.store(name="vq_ce", group="agent", node=VQCEConfig)
+cs.store(name="vq_mse", group="agent", node=VQMSEConfig)
+
+
+# --- FSQ level variation ablations ---
+
+
+@dataclass
+class FSQ8x8Config(DCMPCConfig):
+    """FSQ with [8, 8] levels (64 codes)"""
+
+    fsq_levels: List[int] = field(default_factory=lambda: [8, 8])
+
+
+@dataclass
+class FSQ5x5x5Config(DCMPCConfig):
+    """FSQ with [5, 5, 5] levels (125 codes) -- latent_dim must be divisible by 3"""
+
+    fsq_levels: List[int] = field(default_factory=lambda: [5, 5, 5])
+
+
+cs.store(name="fsq_8x8", group="agent", node=FSQ8x8Config)
+cs.store(name="fsq_5x5x5", group="agent", node=FSQ5x5x5Config)

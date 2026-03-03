@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 import copy
+import math
 from typing import Callable, List, Optional
 
 import torch
 import torch.nn as nn
 from torch.func import functional_call, stack_module_state
 from vector_quantize_pytorch import FSQ as _FSQ
+from vector_quantize_pytorch import VectorQuantize as _VQ
 
 from .helper import orthogonal_init
 
@@ -68,6 +70,151 @@ class FSQ(_FSQ):
 
     def __repr__(self):
         return f"FSQ(levels={self.levels})"
+
+
+class DDCLQuantizer(nn.Module):
+    """
+    DDCL (Differentiable Discrete Communication Learning) quantizer
+    adapted for 1D latent vectors.
+
+    Uses tanh bounding, uniform dithering, floor quantization, and STE.
+    Matches FSQ's interface so it can be swapped in as self._quantizer.
+
+    Reference: https://arxiv.org/abs/2511.01554
+    """
+
+    def __init__(
+        self,
+        n_dims: int = 2,
+        delta: float = 1.0,
+        scale: float = 3.5,
+        ddcl_lambda: float = 1e-3,
+    ):
+        super().__init__()
+        self.n_dims = n_dims
+        self.num_channels = n_dims
+        self.delta = delta
+        self.scale = scale
+        self.ddcl_lambda = ddcl_lambda
+
+        half_delta = delta / 2.0
+        min_m = math.floor((-scale - half_delta) / delta)
+        max_m = math.floor((scale + half_delta) / delta)
+        self.n_levels = max_m - min_m + 1
+        self._codebook_size = self.n_levels**n_dims
+        self.min_m = min_m
+
+        offsets = [self.n_levels ** (n_dims - 1 - i) for i in range(n_dims)]
+        self.register_buffer("_offsets", torch.tensor(offsets, dtype=torch.long))
+
+        centers = torch.tensor(
+            [delta * (m + 0.5) for m in range(min_m, min_m + self.n_levels)]
+        )
+        grids = torch.meshgrid(*([centers] * n_dims), indexing="ij")
+        codebook = torch.stack([g.flatten() for g in grids], dim=-1)
+        self.register_buffer("_implicit_codebook", codebook)
+
+    @property
+    def codebook_size(self) -> int:
+        return self._codebook_size
+
+    @property
+    def implicit_codebook(self) -> torch.Tensor:
+        return self._implicit_codebook
+
+    def forward(self, z):
+        shp = z.shape
+        z = z.view(*shp[:-1], -1, self.num_channels)
+
+        z_bounded = self.scale * torch.tanh(z)
+
+        if self.training:
+            epsilon = (torch.rand_like(z_bounded) - 0.5) * self.delta
+            z_prime = z_bounded + epsilon
+            m = torch.floor(z_prime / self.delta)
+            c_m = self.delta * (m + 0.5)
+            z_hat = c_m - epsilon
+            z_approx = z_bounded + (z_hat - z_bounded).detach()
+        else:
+            m = torch.round(z_bounded / self.delta)
+            z_approx = self.delta * (m + 0.5)
+
+        comm_loss = self.ddcl_lambda * torch.log2(
+            z_bounded.abs() / self.delta + 1.0
+        ).mean()
+
+        m_shifted = (m.long() - self.min_m).clamp(0, self.n_levels - 1)
+        indices = (m_shifted * self._offsets).sum(dim=-1)
+
+        codes = z_approx.flatten(-2)
+        return {
+            "codes": codes,
+            "indices": indices,
+            "z": z,
+            "state": codes,
+            "comm_loss": comm_loss,
+        }
+
+    def __repr__(self):
+        return (
+            f"DDCLQuantizer(n_dims={self.n_dims}, delta={self.delta}, "
+            f"scale={self.scale}, n_levels={self.n_levels}, "
+            f"codebook_size={self.codebook_size})"
+        )
+
+
+class VQQuantizer(nn.Module):
+    """
+    Vector Quantization wrapper using vector_quantize_pytorch.VectorQuantize.
+
+    Splits 1D latent into groups and quantizes each group against a shared
+    learned codebook. Matches FSQ's interface for use as self._quantizer.
+    """
+
+    def __init__(self, codebook_size: int = 15, codebook_dim: int = 2):
+        super().__init__()
+        self.num_channels = codebook_dim
+        self._codebook_size = codebook_size
+        self._vq = _VQ(
+            dim=codebook_dim,
+            codebook_size=codebook_size,
+            accept_image_fmap=False,
+        )
+
+    @property
+    def codebook_size(self) -> int:
+        return self._codebook_size
+
+    @property
+    def implicit_codebook(self) -> torch.Tensor:
+        return self._vq.codebook
+
+    def forward(self, z):
+        shp = z.shape
+        z_grouped = z.view(*shp[:-1], -1, self.num_channels)
+
+        orig_shape = z_grouped.shape
+        z_flat = z_grouped.reshape(-1, z_grouped.shape[-2], self.num_channels)
+
+        z_q, indices, commit_loss = self._vq(z_flat)
+
+        z_q = z_q.reshape(orig_shape)
+        indices = indices.reshape(orig_shape[:-1])
+
+        codes = z_q.flatten(-2)
+        return {
+            "codes": codes,
+            "indices": indices,
+            "z": z_grouped,
+            "state": codes,
+            "commit_loss": commit_loss,
+        }
+
+    def __repr__(self):
+        return (
+            f"VQQuantizer(codebook_size={self.codebook_size}, "
+            f"codebook_dim={self.num_channels})"
+        )
 
 
 class NormedLinear(nn.Linear):

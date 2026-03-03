@@ -15,10 +15,10 @@ import utils.helper as h
 import wandb
 from einops import einsum, rearrange
 from tensordict import TensorDict
-from torch import autocast, GradScaler
-from torchrl.data import BoundedTensorSpec, CompositeSpec
+from torch.amp import autocast, GradScaler
+from torchrl.data import Bounded, Composite
 from utils import ReplayBuffer, ReplayBufferSamples
-from utils.layers import FSQ, mlp, mlp_ensemble
+from utils.layers import DDCLQuantizer, FSQ, VQQuantizer, mlp, mlp_ensemble
 
 
 logger = logging.getLogger(__name__)
@@ -64,10 +64,22 @@ class DCMPCConfig:
     ce_logits_mode: str = "standard"  # "standard", cosine", "mse"
     """How to get propagate the state dist. during training"""
     unc_prop_mode: str = "sample"  # Literal["sample", "sample-no-grad", "weighted-avg"]
-    """Flag to turn FSQ off"""
-    use_fsq: bool = True
+    """Which quantizer to use: 'fsq', 'vq', 'ddcl', or 'none' (continuous)"""
+    quantizer: str = "fsq"
     """FSQ levels hyperparameter - [5, 3] corresponds to 15 codes"""
     fsq_levels: List[int] = field(default_factory=lambda: [5, 3])
+    """VQ codebook size (number of code vectors)"""
+    vq_codebook_size: int = 15
+    """VQ codebook dimension (dimension of each code vector)"""
+    vq_codebook_dim: int = 2
+    """DDCL number of quantized dimensions per group"""
+    ddcl_n_dims: int = 2
+    """DDCL quantization bin width"""
+    ddcl_delta: float = 1.0
+    """DDCL tanh pre-scaling factor"""
+    ddcl_scale: float = 3.5
+    """DDCL communication cost weight"""
+    ddcl_lambda: float = 1e-3
     """(Optionally) use automatic mixed precision"""
     use_amp: bool = False
     """Use straight through Gumbel softmax (hard) or just Gumbel softmax (soft)"""
@@ -151,26 +163,61 @@ class DCMPCConfig:
 class WorldModel(nn.Module):
     """Discrete Codebook World Model"""
 
-    def __init__(self, cfg, obs_spec: CompositeSpec, act_spec: BoundedTensorSpec):
+    def __init__(self, cfg, obs_spec: Composite, act_spec: Bounded):
         super().__init__()
         self.cfg = cfg
         self.obs_spec = obs_spec
         self.act_spec = act_spec
         act_dim = np.array(act_spec.shape).prod().item()
 
-        ##### Configure FSQ stuff #####
+        ##### Configure quantizer #####
         self.org_latent_dim = copy.copy(cfg.latent_dim)
         self.enc_latent_dim = copy.copy(cfg.latent_dim)
-        if cfg.use_fsq:
+        self._quantizer = None
+        self.num_channels = 1
+
+        if cfg.quantizer == "fsq":
             self.num_channels = len(cfg.fsq_levels)
-            if not cfg.latent_dim % self.num_channels == 0:
-                raise NotImplementedError(
+            if cfg.latent_dim % self.num_channels != 0:
+                raise ValueError(
                     "latent_dim must be divisible by number of FSQ channels"
                 )
-            self._fsq = FSQ(levels=cfg.fsq_levels)
-
+            self._quantizer = FSQ(levels=cfg.fsq_levels)
             self.enc_latent_dim = self.org_latent_dim * self.num_channels
             self.cfg.latent_dim *= self.num_channels
+        elif cfg.quantizer == "vq":
+            self.num_channels = cfg.vq_codebook_dim
+            if cfg.latent_dim % self.num_channels != 0:
+                raise ValueError(
+                    "latent_dim must be divisible by vq_codebook_dim"
+                )
+            self._quantizer = VQQuantizer(
+                codebook_size=cfg.vq_codebook_size,
+                codebook_dim=cfg.vq_codebook_dim,
+            )
+            self.enc_latent_dim = self.org_latent_dim * self.num_channels
+            self.cfg.latent_dim *= self.num_channels
+        elif cfg.quantizer == "ddcl":
+            self.num_channels = cfg.ddcl_n_dims
+            if cfg.latent_dim % self.num_channels != 0:
+                raise ValueError(
+                    "latent_dim must be divisible by ddcl_n_dims"
+                )
+            self._quantizer = DDCLQuantizer(
+                n_dims=cfg.ddcl_n_dims,
+                delta=cfg.ddcl_delta,
+                scale=cfg.ddcl_scale,
+                ddcl_lambda=cfg.ddcl_lambda,
+            )
+            self.enc_latent_dim = self.org_latent_dim * self.num_channels
+            self.cfg.latent_dim *= self.num_channels
+        elif cfg.quantizer == "none":
+            pass
+        else:
+            raise ValueError(
+                f"quantizer must be 'fsq', 'vq', 'ddcl', or 'none', got '{cfg.quantizer}'"
+            )
+        self._uses_discrete = self._quantizer is not None
 
         ##### Init encoder #####
         self._encoder = nn.ModuleDict()
@@ -190,9 +237,8 @@ class WorldModel(nn.Module):
         trans_out_dim = self.cfg.latent_dim
         if self.cfg.consistency_loss == "cross-entropy":
             if self.cfg.ce_logits_mode == "standard":
-                """If training dynamics w/ cross entropy change output dim"""
-                assert cfg.use_fsq
-                trans_out_dim = int(self.org_latent_dim * self._fsq.codebook_size)
+                assert self._uses_discrete, "cross-entropy requires a discrete quantizer"
+                trans_out_dim = int(self.org_latent_dim * self._quantizer.codebook_size)
         self._trans = mlp(self.enc_latent_dim + act_dim, cfg.mlp_dims, trans_out_dim)
         if cfg.compile:
             self._trans = torch.compile(self._trans, mode="default")
@@ -222,7 +268,7 @@ class WorldModel(nn.Module):
             raise NotImplementedError("Need to make encoder take both state and pixels")
 
         td = TensorDict({"state": z}, batch_size=obs.batch_size)
-        if self.cfg.use_fsq:
+        if self._uses_discrete:
             td.update(self.quantize(z))
         else:
             td.update({"codes": z})
@@ -235,15 +281,14 @@ class WorldModel(nn.Module):
             self.cfg.consistency_loss == "cross-entropy"
             and self.cfg.ce_logits_mode == "standard"
         ):
-            """Make predictions with dynamics as NN classifier"""
-            # Returns logits for each class
             logits = self._trans(za)
-            logits = logits.reshape(-1, self.org_latent_dim, self._fsq.codebook_size)
+            logits = logits.reshape(
+                -1, self.org_latent_dim, self._quantizer.codebook_size
+            )
 
             if unc_prop_mode is None:
                 unc_prop_mode = self.cfg.unc_prop_mode
 
-            # Convert latent state logits to an actual latent state
             if "sample-no-grad" in unc_prop_mode:
 
                 def gumbel_sample(logits):
@@ -252,7 +297,7 @@ class WorldModel(nn.Module):
                     return torch.argmax(adjusted_logits, dim=-1)
 
                 indices = gumbel_sample(logits)
-                next_z = self._fsq.implicit_codebook[indices].flatten(-2)
+                next_z = self._quantizer.implicit_codebook[indices].flatten(-2)
                 next_z_dict = {
                     "codes": next_z,
                     "logits": logits,
@@ -262,7 +307,7 @@ class WorldModel(nn.Module):
                 z_one_hot = torch.nn.functional.gumbel_softmax(
                     logits, tau=1, hard=self.cfg.straight_through_gumbel, dim=-1
                 )
-                codebook = self._fsq.implicit_codebook
+                codebook = self._quantizer.implicit_codebook
                 next_z = einsum(z_one_hot, codebook, "b d c, c l -> b d l")
                 next_z = rearrange(next_z, "b d l -> b (d l)")
                 next_z_dict = {
@@ -272,27 +317,27 @@ class WorldModel(nn.Module):
                 }
             elif "weighted-avg" in unc_prop_mode:
                 probs = F.softmax(logits, dim=-1)
-                codebook = self._fsq.implicit_codebook
+                codebook = self._quantizer.implicit_codebook
                 next_z = einsum(probs, codebook, "b d c, c l -> b d l")
                 next_z = rearrange(next_z, "b d l -> b (d l)")
                 next_z_dict = {"codes": next_z, "logits": logits}
             elif unc_prop_mode in ["mode", "max"]:
-                # Note this has no gradients so should only be used for MPC
                 indices = torch.max(logits, -1)[1]
-                next_z = self._fsq.implicit_codebook[indices.to(torch.long)].flatten(-2)
+                next_z = self._quantizer.implicit_codebook[
+                    indices.to(torch.long)
+                ].flatten(-2)
                 next_z_dict = {"codes": next_z, "logits": logits, "indices": indices}
             else:
                 raise NotImplementedError
         else:
-            """Make predictions with dynamics regression model"""
             delta_z = self._trans(za)
             next_z = z + delta_z if self.cfg.use_delta else delta_z
-            if self.cfg.use_fsq:
+            if self._uses_discrete:
                 next_z = self.quantize(next_z)["codes"]
 
             next_z_dict = {"codes": next_z}
 
-        if self.cfg.use_fsq:
+        if self._uses_discrete:
             shape = *next_z.shape[0:-1], self.org_latent_dim, self.num_channels
         else:
             shape = *next_z.shape[0:-1], self.org_latent_dim
@@ -310,14 +355,15 @@ class WorldModel(nn.Module):
         return r
 
     def quantize(self, z):
-        """Quantize the latent state"""
-        td = self._fsq(z)
+        """Quantize the latent state using the configured quantizer"""
+        td = self._quantizer(z)
         td["state"] = td["codes"]
         return td
 
     def loss(self, batch: ReplayBufferSamples) -> Tuple[torch.Tensor, dict]:
         tc_loss = torch.zeros(1).to(self.cfg.device)
         reward_loss = torch.zeros(1).to(self.cfg.device)
+        aux_loss = torch.zeros(1).to(self.cfg.device)
 
         ##### Create targets #####
         with torch.no_grad():
@@ -340,7 +386,7 @@ class WorldModel(nn.Module):
                         self.cfg.horizon + 1,
                         self.cfg.batch_size,
                         self.org_latent_dim,
-                        self._fsq.codebook_size,
+                        self._quantizer.codebook_size,
                         device=self.cfg.device,
                     )
                 }
@@ -352,8 +398,15 @@ class WorldModel(nn.Module):
         )
 
         ##### Latent rollout #####
-        z = self.encode(batch.observations[0])["codes"]
+        z_encoded = self.encode(batch.observations[0])
+        z = z_encoded["codes"]
         zs["codes"][0] = z
+
+        if "comm_loss" in z_encoded.keys():
+            aux_loss = aux_loss + z_encoded["comm_loss"]
+        if "commit_loss" in z_encoded.keys():
+            aux_loss = aux_loss + z_encoded["commit_loss"]
+
         dones = torch.zeros_like(batch.dones[0], dtype=torch.bool)
         terminateds_or_dones = torch.zeros_like(batch.dones, dtype=torch.bool)
         a = batch.actions
@@ -363,11 +416,8 @@ class WorldModel(nn.Module):
                 terminateds_or_dones[t], torch.logical_or(dones, batch.terminateds[t])
             )
 
-            # Predict next latent
             next_z = self.trans(z=z, a=a[t])
             zs[t + 1] = next_z
-
-            # Don't forget this
             z = next_z["codes"]
 
         rho = torch.tensor([self.cfg.rho**t for t in range(self.cfg.horizon)]).to(
@@ -377,7 +427,7 @@ class WorldModel(nn.Module):
 
         ##### (Optional) Reward prediction loss #####
         if self.cfg.use_rew_loss:
-            r_tar = batch.rewards  # Reward target
+            r_tar = batch.rewards
             r_pred = self.reward(z=zs["codes"][:-1], a=a)[..., 0]
             assert r_pred.ndim == 2 and r_tar.ndim == 2
             _reward_loss = (r_pred - r_tar) ** 2
@@ -387,24 +437,19 @@ class WorldModel(nn.Module):
         ##### Temporal consistency loss #####
         if self.cfg.use_tc_loss:
             if self.cfg.consistency_loss == "cross-entropy":
-                """Cross entropy"""
                 if self.cfg.ce_logits_mode in ["cosine", "mse"]:
-                    """If not predicting logits with dynamics NN use alternative method"""
                     zs_ = zs["codes"][1:].view(
                         self.cfg.horizon,
                         self.cfg.batch_size,
                         int(self.cfg.latent_dim / self.num_channels),
                         self.num_channels,
                     )[..., None, :]
-                    codebook = self._fsq.implicit_codebook[None, None, None, ...]
+                    codebook = self._quantizer.implicit_codebook[None, None, None, ...]
                     if self.cfg.ce_logits_mode == "cosine":
-                        """Cosine similarity with codebook"""
-                        # TODO use compute_logits like CLIP
                         zs["logits"][1:] = nn.CosineSimilarity(dim=-1, eps=1e-6)(
                             zs_, codebook
                         )
                     elif self.cfg.ce_logits_mode == "mse":
-                        """Inner product with codebook"""
                         zs["logits"][1:] = torch.einsum(
                             "hbdic,hbdCc->hbdC", zs_, codebook
                         )
@@ -413,12 +458,10 @@ class WorldModel(nn.Module):
                     zs_tar["indices"].to(torch.long),
                 )
             elif self.cfg.consistency_loss == "cosine":
-                """Cosine similarity"""
                 _tc_loss = -nn.CosineSimilarity(dim=-1, eps=1e-6)(
                     zs["codes"][1:], zs_tar["codes"]
                 )
             elif self.cfg.consistency_loss == "mse":
-                """Mean squared error"""
                 _tc_loss = torch.mean((zs["codes"][1:] - zs_tar["codes"]) ** 2, dim=-1)
             else:
                 raise NotImplementedError(
@@ -428,10 +471,15 @@ class WorldModel(nn.Module):
             _rho_tc_loss = rho * torch.mean((1 - dones) * _tc_loss, -1)
             tc_loss = torch.mean(_rho_tc_loss)
 
-        loss = self.cfg.consistency_coef * tc_loss + self.cfg.reward_coef * reward_loss
+        loss = (
+            self.cfg.consistency_coef * tc_loss
+            + self.cfg.reward_coef * reward_loss
+            + aux_loss
+        )
         info = {
             "tc_loss": tc_loss.item(),
             "reward_loss": reward_loss.item(),
+            "aux_loss": aux_loss.item(),
             "enc_loss": loss.item(),
             "z_min": torch.min(zs["codes"]).item(),
             "z_max": torch.max(zs["codes"]).item(),
@@ -451,15 +499,14 @@ class WorldModel(nn.Module):
     def metrics(self, batch):
         z = self.encode(batch.observations[0])
 
-        # Calculate rank of latent
         metrics = h.calc_rank(name="z", z=z["state"])
 
-        # Calculate percentage of codebook that's active
-        if self.cfg.use_fsq:
-            num_codes = torch.tensor(math.prod(self.cfg.fsq_levels), device=z.device)
+        if self._uses_discrete:
+            num_codes = torch.tensor(
+                self._quantizer.codebook_size, device=z.device, dtype=torch.float
+            )
 
             def act_percent_fn(z):
-                # TODO can't vmap this because Tensor.unique() not allowed in vmap
                 return z.unique().numel() / num_codes * 100
 
             active_percents = torch.empty(z["indices"].shape[1])
@@ -483,7 +530,7 @@ class WorldModel(nn.Module):
 class DCMPC(nn.Module):
     """Discrete Codebook Model Predictive Control"""
 
-    def __init__(self, cfg, obs_spec: CompositeSpec, act_spec: BoundedTensorSpec):
+    def __init__(self, cfg, obs_spec: Composite, act_spec: Bounded):
         super().__init__()
         self.cfg = cfg
         self.obs_spec = obs_spec
