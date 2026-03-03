@@ -1,0 +1,46 @@
+[project]
+name = "dcmpc"
+version = "0.1.0"
+description = "Discrete Codebook Model Predictive Control"
+license = "MIT"
+requires-python = ">=3.12"
+
+dependencies = [
+    "torch>=2.10.0",
+    "torchvision>=0.25.0",
+    "torchrl>=0.11.1",
+    "tensordict>=0.11.0",
+    "numpy>=2.4.0",
+    "einops>=0.8.0",
+    "jaxtyping>=0.3.0",
+    "termcolor>=3.0.0",
+    "vector-quantize-pytorch>=1.27.0",
+    "wandb>=0.25.0",
+    "hydra-core>=1.3.2",
+    "hydra-submitit-launcher>=1.2.0",
+    "hydra-colorlog>=1.2.0",
+    "omegaconf>=2.3.0",
+    "dm-control>=1.0.20",
+    "gymnasium>=1.2.0",
+    "metaworld>=3.0.0",
+    "myosuite>=2.11.0",
+    "imageio>=2.37.0",
+    "imageio-ffmpeg>=0.6.0",
+    "moviepy>=2.2.0",
+    "av>=16.0.0",
+]
+
+[dependency-groups]
+dev = [
+    "tensorboard>=2.20.0",
+    "seaborn>=0.13.0",
+    "matplotlib>=3.10.0",
+]
+
+# myosuite pins gymnasium==0.29.1 and mujoco==3.3.0, but these are
+# overly strict and work fine with newer versions in practice.
+[tool.uv]
+override-dependencies = [
+    "gymnasium>=1.2.0",
+    "mujoco>=3.5.0",
+]
