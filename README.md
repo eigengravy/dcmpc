@@ -52,6 +52,45 @@ python train.py env=walker-walk ++use_wandb=True ++agent.batch_size=1024
 ```
 changes the batch size to be 1024 instead of the default value found in `dcmpc.py/DCMPCConfig`.
 
+### Quantizer variants
+
+The default quantizer is FSQ. Pre-configured agent variants are registered in `config.py` and can be selected via `agent=`:
+
+``` sh
+# DDCL quantizer + cross-entropy consistency loss
+python train.py env=walker-walk agent=ddcl_ce
+
+# DDCL quantizer + MSE consistency loss
+python train.py env=walker-walk agent=ddcl_mse
+
+# VQ quantizer + cross-entropy / MSE consistency loss
+python train.py env=walker-walk agent=vq_ce
+python train.py env=walker-walk agent=vq_mse
+
+# Continuous latent (no quantization) + MSE
+python train.py env=walker-walk agent=continuous_mse
+
+# FSQ ablations
+python train.py env=walker-walk agent=fsq_8x8
+python train.py env=walker-walk agent=fsq_5x5x5
+```
+
+You can also override individual DDCL parameters directly:
+``` sh
+python train.py env=walker-walk ++agent.quantizer=ddcl ++agent.ddcl_n_dims=4 ++agent.ddcl_delta=0.5 ++agent.ddcl_scale=3.5 ++agent.ddcl_lambda=1e-3
+```
+
+| Parameter | Default | Description |
+|---|---|---|
+| `agent.quantizer` | `fsq` | Quantizer type: `fsq`, `ddcl`, `vq`, or `none` |
+| `agent.ddcl_n_dims` | `2` | DDCL group size (`latent_dim` must be divisible by this) |
+| `agent.ddcl_delta` | `1.0` | DDCL quantization bin width |
+| `agent.ddcl_scale` | `3.5` | DDCL tanh pre-scaling factor |
+| `agent.ddcl_lambda` | `1e-3` | DDCL communication cost weight |
+| `agent.consistency_loss` | `cross-entropy` | Consistency loss: `cross-entropy`, `mse`, or `cosine` |
+
+### Slurm multi-run
+
 You can also use hydra to submit multiple Slurm jobs directly from the command line using
 ``` sh
 python train.py -m env=walker-walk ++use_wandb=True ++agent.batch_size=256,512 ++agent.lr=1e-4,1e-4

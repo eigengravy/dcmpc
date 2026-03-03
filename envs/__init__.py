@@ -2,7 +2,7 @@
 import gymnasium as gym
 from dm_control import suite
 from envs.tasks import ball_in_cup, pendulum
-from metaworld.envs import ALL_V2_ENVIRONMENTS_GOAL_OBSERVABLE
+from metaworld import ALL_V3_ENVIRONMENTS_GOAL_OBSERVABLE
 from omegaconf import OmegaConf
 from torchrl.envs import GymEnv, ParallelEnv, SerialEnv, StepCounter, TransformedEnv
 from torchrl.envs.transforms import (
@@ -99,11 +99,11 @@ def make_env_fn(cfg, record_video: bool = False):
             device=cfg.env_device,
         )
     elif (
-        cfg.env_name.split("mw-", 1)[-1] + "-v2-goal-observable"
-        in ALL_V2_ENVIRONMENTS_GOAL_OBSERVABLE
+        cfg.env_name.split("mw-", 1)[-1] + "-v3-goal-observable"
+        in ALL_V3_ENVIRONMENTS_GOAL_OBSERVABLE
     ):
         env = metaworld_make_env(
-            env_name=cfg.env_name.split("-", 1)[-1] + "-v2-goal-observable",
+            env_name=cfg.env_name.split("-", 1)[-1] + "-v3-goal-observable",
             from_pixels=record_video,
             seed=cfg.seed,
             frame_skip=cfg.action_repeat,

@@ -269,7 +269,16 @@ class WorldModel(nn.Module):
 
         td = TensorDict({"state": z}, batch_size=obs.batch_size)
         if self._uses_discrete:
-            td.update(self.quantize(z))
+            q_out = self.quantize(z)
+            # Scalar losses can't be stored in a batched TensorDict,
+            # so stash them as plain attributes instead.
+            comm_loss = q_out.pop("comm_loss", None)
+            commit_loss = q_out.pop("commit_loss", None)
+            td.update(q_out)
+            if comm_loss is not None:
+                td.comm_loss = comm_loss
+            if commit_loss is not None:
+                td.commit_loss = commit_loss
         else:
             td.update({"codes": z})
         return td
@@ -402,10 +411,10 @@ class WorldModel(nn.Module):
         z = z_encoded["codes"]
         zs["codes"][0] = z
 
-        if "comm_loss" in z_encoded.keys():
-            aux_loss = aux_loss + z_encoded["comm_loss"]
-        if "commit_loss" in z_encoded.keys():
-            aux_loss = aux_loss + z_encoded["commit_loss"]
+        if hasattr(z_encoded, "comm_loss") and z_encoded.comm_loss is not None:
+            aux_loss = aux_loss + z_encoded.comm_loss
+        if hasattr(z_encoded, "commit_loss") and z_encoded.commit_loss is not None:
+            aux_loss = aux_loss + z_encoded.commit_loss
 
         dones = torch.zeros_like(batch.dones[0], dtype=torch.bool)
         terminateds_or_dones = torch.zeros_like(batch.dones, dtype=torch.bool)

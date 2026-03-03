@@ -20,7 +20,7 @@ dependencies = [
     "hydra-submitit-launcher>=1.2.0",
     "hydra-colorlog>=1.2.0",
     "omegaconf>=2.3.0",
-    "dm-control>=1.0.20",
+    "dm-control>=1.0.30",
     "gymnasium>=1.2.0",
     "metaworld>=3.0.0",
     "myosuite>=2.11.0",
@@ -43,4 +43,5 @@ dev = [
 override-dependencies = [
     "gymnasium>=1.2.0",
     "mujoco>=3.5.0",
+    "dm-control>=1.0.30",
 ]

@@ -4,7 +4,7 @@ from typing import Optional
 import gymnasium as gym
 import numpy as np
 from gymnasium.wrappers import TimeLimit
-from metaworld.envs import ALL_V2_ENVIRONMENTS_GOAL_OBSERVABLE
+from metaworld import ALL_V3_ENVIRONMENTS_GOAL_OBSERVABLE
 from torchrl.envs import default_info_dict_reader, GymWrapper
 
 
@@ -62,7 +62,7 @@ def make_env(
     if max_episode_steps is None:
         max_episode_steps = 200
     # assert cfg.obs == "state", "This task only supports state observations."
-    env = ALL_V2_ENVIRONMENTS_GOAL_OBSERVABLE[env_name](seed=seed)
+    env = ALL_V3_ENVIRONMENTS_GOAL_OBSERVABLE[env_name](seed=seed)
     env = MetaWorldWrapper(env, action_repeat=frame_skip)
     env = TimeLimit(env, max_episode_steps=max_episode_steps)
     # env.max_episode_steps = env._max_episode_steps
