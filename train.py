@@ -41,7 +41,7 @@ def train(cfg: TrainConfig):
     from omegaconf import OmegaConf
     from tensordict.nn import TensorDictModule
     from termcolor import colored
-    from torchrl.data import Bounded
+    from torchrl.data.tensor_specs import BoundedTensorSpec
     from torchrl.record.loggers.wandb import WandbLogger
     from utils import evaluate, ReplayBuffer
 
@@ -81,7 +81,7 @@ def train(cfg: TrainConfig):
             logger=writer,
         )
     assert isinstance(
-        env.action_spec, Bounded
+        env.action_spec, BoundedTensorSpec
     ), "only continuous act space supported"
 
     writer.log_hparams(cfg)

@@ -1,37 +1,19 @@
 # DC-MPC: Discrete Codebook Model Predictive Control
-This repository is the official implementation of [DC-MPC](https://www.aidanscannell.com/dcmpc), 
+This repository is the official implementation of [DC-MPC](https://www.aidanscannell.com/dcmpc),
 presented in ["Discrete Codebook World Models for Continuous Control"](https://openreview.net/forum?id=lfRYzd8ady) at ICLR 2025.
-[DC-MPC](https://www.aidanscannell.com/dcmpc) is a model-based reinforcement learning algorithm demonstrating the 
+[DC-MPC](https://www.aidanscannell.com/dcmpc) is a model-based reinforcement learning algorithm demonstrating the
 strengths of learning a discrete latent space with discrete codebook encodings.
 
 > In reinforcement learning (RL), world models serve as internal simulators, enabling agents to predict environment dynamics and future outcomes in order to make informed decisions. While previous approaches leveraging discrete latent spaces, such as DreamerV3, have demonstrated strong performance in discrete action settings and visual control tasks, their comparative performance in state-based continuous control remains underexplored. In contrast, methods with continuous latent spaces, such as TD-MPC2, have shown notable success in state-based continuous control benchmarks. In this paper, we demonstrate that modelling discrete latent states has benefits over continuous latent states and that discrete codebook encodings are more effective representations for continuous control, compared to alternative encodings, such as one-hot and label-based encodings. Based on these insights, we introduce DCWM: **D**iscrete **C**odebook **W**orld **M**odel, a self-supervised world model with a discrete and stochastic latent space, where latent states are codes from a codebook. We combine DCWM with decision-time planning to get our model-based RL algorithm, named DC-MPC: **D**iscrete **C**odebook **M**odel **P**redictive **C**ontrol, which performs competitively against recent state-of-the-art algorithms, including TD-MPC2 and DreamerV3, on continuous control benchmarks. See our project website [www.aidanscannell.com/dcmpc](https://www.aidanscannell.com/dcmpc).
 
 
 ## Install instructions
-
-### System dependencies
-
-MuJoCo rendering requires OpenGL libraries, and video logging requires ffmpeg.
-
-**macOS:**
+Install dependencies:
 ```sh
-brew install ffmpeg glfw glew
+conda env create -f environment.yml
+conda activate dcmpc
 ```
-
-**Ubuntu/Debian:**
-```sh
-sudo apt install ffmpeg libglfw3-dev libglew-dev libosmesa6-dev
-```
-
-### Python dependencies
-
-Requires Python 3.12+ and [uv](https://docs.astral.sh/uv/).
-
-```sh
-uv sync
-```
-
-You might need to install PyTorch with CUDA/ROCm separately — see [pytorch.org](https://pytorch.org/get-started/locally/).
+You might need to install PyTorch with CUDA/ROCm.
 
 ## Running experiments
 Train the agent:

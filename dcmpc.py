@@ -15,8 +15,8 @@ import utils.helper as h
 import wandb
 from einops import einsum, rearrange
 from tensordict import TensorDict
-from torch.amp import autocast, GradScaler
-from torchrl.data import Bounded, Composite
+from torch import autocast, GradScaler
+from torchrl.data import BoundedTensorSpec, CompositeSpec
 from utils import ReplayBuffer, ReplayBufferSamples
 from utils.layers import DDCLQuantizer, FSQ, VQQuantizer, mlp, mlp_ensemble
 
@@ -163,7 +163,7 @@ class DCMPCConfig:
 class WorldModel(nn.Module):
     """Discrete Codebook World Model"""
 
-    def __init__(self, cfg, obs_spec: Composite, act_spec: Bounded):
+    def __init__(self, cfg, obs_spec: CompositeSpec, act_spec: BoundedTensorSpec):
         super().__init__()
         self.cfg = cfg
         self.obs_spec = obs_spec
@@ -530,7 +530,7 @@ class WorldModel(nn.Module):
 class DCMPC(nn.Module):
     """Discrete Codebook Model Predictive Control"""
 
-    def __init__(self, cfg, obs_spec: Composite, act_spec: Bounded):
+    def __init__(self, cfg, obs_spec: CompositeSpec, act_spec: BoundedTensorSpec):
         super().__init__()
         self.cfg = cfg
         self.obs_spec = obs_spec
