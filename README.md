@@ -8,12 +8,30 @@ strengths of learning a discrete latent space with discrete codebook encodings.
 
 
 ## Install instructions
-Install dependencies:
+
+### System dependencies
+
+MuJoCo rendering requires OpenGL libraries, and video logging requires ffmpeg.
+
+**macOS:**
 ```sh
-conda env create -f environment.yml
-conda activate dcmpc
+brew install ffmpeg glfw glew
 ```
-You might need to install PyTorch with CUDA/ROCm.
+
+**Ubuntu/Debian:**
+```sh
+sudo apt install ffmpeg libglfw3-dev libglew-dev libosmesa6-dev
+```
+
+### Python dependencies
+
+Requires Python 3.12+ and [uv](https://docs.astral.sh/uv/).
+
+```sh
+uv sync
+```
+
+You might need to install PyTorch with CUDA/ROCm separately — see [pytorch.org](https://pytorch.org/get-started/locally/).
 
 ## Running experiments
 Train the agent:
