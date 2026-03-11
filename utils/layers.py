@@ -88,7 +88,7 @@ class DDCLQuantizer(nn.Module):
         n_dims: int = 2,
         delta: float = 1.0,
         scale: float = 3.5,
-        ddcl_lambda: float = 1e-3,
+        ddcl_lambda: float = 1,
     ):
         super().__init__()
         self.n_dims = n_dims
@@ -128,16 +128,12 @@ class DDCLQuantizer(nn.Module):
 
         z_bounded = self.scale * torch.tanh(z)
 
-        if self.training:
-            epsilon = (torch.rand_like(z_bounded) - 0.5) * self.delta
-            z_prime = z_bounded + epsilon
-            m = torch.floor(z_prime / self.delta)
-            c_m = self.delta * (m + 0.5)
-            z_hat = c_m - epsilon
-            z_approx = z_bounded + (z_hat - z_bounded).detach()
-        else:
-            m = torch.round(z_bounded / self.delta)
-            z_approx = self.delta * (m + 0.5)
+        epsilon = (torch.rand_like(z_bounded) - 0.5) * self.delta
+        z_prime = z_bounded + epsilon
+        m = torch.floor(z_prime / self.delta)
+        c_m = self.delta * (m + 0.5)
+        z_hat = c_m - epsilon
+        z_approx = z_bounded + (z_hat - z_bounded).detach()
 
         comm_loss = self.ddcl_lambda * torch.log2(
             z_bounded.abs() / self.delta + 1.0

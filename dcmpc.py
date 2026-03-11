@@ -373,6 +373,8 @@ class WorldModel(nn.Module):
         tc_loss = torch.zeros(1).to(self.cfg.device)
         reward_loss = torch.zeros(1).to(self.cfg.device)
         aux_loss = torch.zeros(1).to(self.cfg.device)
+        comm_loss = torch.zeros(1).to(self.cfg.device)
+        commit_loss = torch.zeros(1).to(self.cfg.device)
 
         ##### Create targets #####
         with torch.no_grad():
@@ -412,9 +414,11 @@ class WorldModel(nn.Module):
         zs["codes"][0] = z
 
         if hasattr(z_encoded, "comm_loss") and z_encoded.comm_loss is not None:
-            aux_loss = aux_loss + z_encoded.comm_loss
+            comm_loss = z_encoded.comm_loss
+            aux_loss = aux_loss + comm_loss
         if hasattr(z_encoded, "commit_loss") and z_encoded.commit_loss is not None:
-            aux_loss = aux_loss + z_encoded.commit_loss
+            commit_loss = z_encoded.commit_loss
+            aux_loss = aux_loss + commit_loss
 
         dones = torch.zeros_like(batch.dones[0], dtype=torch.bool)
         terminateds_or_dones = torch.zeros_like(batch.dones, dtype=torch.bool)
@@ -489,6 +493,8 @@ class WorldModel(nn.Module):
             "tc_loss": tc_loss.item(),
             "reward_loss": reward_loss.item(),
             "aux_loss": aux_loss.item(),
+            "comm_loss": comm_loss.item(),
+            "commit_loss": commit_loss.item(),
             "enc_loss": loss.item(),
             "z_min": torch.min(zs["codes"]).item(),
             "z_max": torch.max(zs["codes"]).item(),
@@ -528,6 +534,32 @@ class WorldModel(nn.Module):
                     "active_percent_max": active_percents.max(),
                 }
             )
+
+            # Codebook usage: unique full code vectors across batch
+            indices = z["indices"]  # shape: [batch, num_groups]
+            flat_indices = indices.reshape(-1, indices.shape[-1])
+            unique_vectors = torch.unique(flat_indices, dim=0)
+            unique_count = unique_vectors.shape[0]
+            total_codes = self._quantizer.codebook_size
+            metrics.update(
+                {
+                    "codebook/unique_codes": unique_count,
+                    "codebook/total_codes": total_codes,
+                    "codebook/usage_percent": unique_count / total_codes * 100,
+                }
+            )
+
+            # DDCL-specific: comms bits (info rate without lambda weighting)
+            if isinstance(self._quantizer, DDCLQuantizer):
+                z_bounded = z["z"]  # pre-quantized bounded values
+                comms_bits = torch.log2(
+                    z_bounded.abs() / self._quantizer.delta + 1.0
+                ).mean()
+                metrics.update(
+                    {
+                        "comms_bits": comms_bits.item(),
+                    }
+                )
 
         return metrics
 

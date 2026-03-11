@@ -60,12 +60,21 @@ def train(cfg: TrainConfig):
 
     ###### Initialise W&B ######
     os.environ["WANDB_SILENT"] = "true" if cfg.wandb_silent else "false"
+    quantizer_type = cfg.agent.get("quantizer", "fsq") if hasattr(cfg.agent, "get") else getattr(cfg.agent, "quantizer", "fsq")
+    consistency_loss = cfg.agent.get("consistency_loss", "cross-entropy") if hasattr(cfg.agent, "get") else getattr(cfg.agent, "consistency_loss", "cross-entropy")
+    task_tag = f"{cfg.env_name}-{cfg.task_name}"
+    exp_name = f"{task_tag}-{quantizer_type}-{consistency_loss}-s{cfg.seed}"
     writer = WandbLogger(
-        exp_name=cfg.run_name,
+        exp_name=exp_name,
         offline=not cfg.use_wandb,
         project=cfg.wandb_project_name,
-        group=f"{cfg.env_name}-{cfg.task_name}",
-        tags=[f"{cfg.env_name}-{cfg.task_name}", f"seed={str(cfg.seed)}"],
+        group=task_tag,
+        tags=[
+            task_tag,
+            f"quantizer={quantizer_type}",
+            f"consistency={consistency_loss}",
+            f"seed={str(cfg.seed)}",
+        ],
         save_code=True,
     )
 
