@@ -139,7 +139,7 @@ class DDCLQuantizer(nn.Module):
             z_bounded.abs() / self.delta + 1.0
         ).mean()
 
-        m_shifted = (m.long() - self.min_m).clamp(0, self.n_levels - 1)
+        m_shifted = m.long() - self.min_m
         indices = (m_shifted * self._offsets).sum(dim=-1)
 
         codes = z_approx.flatten(-2)
