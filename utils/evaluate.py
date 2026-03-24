@@ -11,6 +11,7 @@ def evaluate(
     max_episode_steps: int,
     action_repeat: int = 2,
     video_env=None,
+    return_rollout: bool = False,
 ):
     """Calculate avg. episodic return (optionally avg. success)"""
     eval_metrics = {}
@@ -51,4 +52,6 @@ def evaluate(
             )
         video_env.transform.dump()
 
+    if return_rollout:
+        return eval_metrics, eval_data
     return eval_metrics

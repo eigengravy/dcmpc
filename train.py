@@ -146,12 +146,13 @@ def train(cfg: TrainConfig):
     eval_policy_module = build_policy_module(eval_mode=True)
 
     def evaluate_and_log(best_episode_reward: float = 0.0):
-        eval_metrics = evaluate(
+        eval_metrics, eval_data = evaluate(
             env=eval_env,
             eval_policy_module=eval_policy_module,
             max_episode_steps=cfg.max_episode_steps,
             action_repeat=cfg.action_repeat,
             video_env=video_env if cfg.capture_eval_video else None,
+            return_rollout=True,
         )
 
         ##### Eval metrics #####
@@ -170,9 +171,9 @@ def train(cfg: TrainConfig):
         if cfg.verbose:
             h.print_metrics(cfg, episode_idx, step, eval_metrics, eval_mode=True)
 
-        ##### Log rank of latent and active codebook percent #####
-        batch = rb.sample(batch_size=agent.model.cfg.latent_dim)
-        eval_metrics.update(agent.metrics(batch))
+        ##### Log latent/codebook metrics over the full eval rollout #####
+        eval_observations = eval_data["observation"].flatten()
+        eval_metrics.update(agent.metrics_from_observations(eval_observations))
 
         ##### Log metrics to W&B or csv #####
         writer.log_scalar(name="eval/", value=eval_metrics)

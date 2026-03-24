@@ -512,42 +512,16 @@ class WorldModel(nn.Module):
         return loss, info
 
     def metrics(self, batch):
-        z = self.encode(batch.observations[0])
+        return self.metrics_from_observations(batch.observations[0])
+
+    @torch.no_grad()
+    def metrics_from_observations(self, observations):
+        z = self.encode(observations)
 
         metrics = h.calc_rank(name="z", z=z["state"])
 
         if self._uses_discrete:
-            num_codes = torch.tensor(
-                self._quantizer.codebook_size, device=z.device, dtype=torch.float
-            )
-
-            def act_percent_fn(z):
-                return z.unique().numel() / num_codes * 100
-
-            active_percents = torch.empty(z["indices"].shape[1])
-            for i in range(z["indices"].shape[1]):
-                active_percents[i] = act_percent_fn(z["indices"][i])
-            metrics.update(
-                {
-                    "active_percent_avg": active_percents.mean(),
-                    "active_percent_min": active_percents.min(),
-                    "active_percent_max": active_percents.max(),
-                }
-            )
-
-            # Codebook usage: unique full code vectors across batch
-            indices = z["indices"]  # shape: [batch, num_groups]
-            flat_indices = indices.reshape(-1, indices.shape[-1])
-            unique_vectors = torch.unique(flat_indices, dim=0)
-            unique_count = unique_vectors.shape[0]
-            total_codes = self._quantizer.codebook_size
-            metrics.update(
-                {
-                    "codebook/unique_codes": unique_count,
-                    "codebook/total_codes": total_codes,
-                    "codebook/usage_percent": unique_count / total_codes * 100,
-                }
-            )
+            metrics.update(self._compute_codebook_metrics(z["indices"]))
 
             # DDCL-specific: comms bits (info rate without lambda weighting)
             if isinstance(self._quantizer, DDCLQuantizer):
@@ -562,6 +536,92 @@ class WorldModel(nn.Module):
                 )
 
         return metrics
+
+    @torch.no_grad()
+    def _compute_codebook_metrics(self, indices: torch.Tensor) -> dict:
+        if indices.ndim == 1:
+            indices = indices.unsqueeze(-1)
+
+        flat_tokens = indices.reshape(-1).to(torch.long)
+        total_codes = int(self._quantizer.codebook_size)
+        unique_count = flat_tokens.unique().numel()
+        usage_percent = unique_count / total_codes * 100
+
+        per_group_usage = torch.empty(
+            indices.shape[-1], device=indices.device, dtype=torch.float32
+        )
+        for group_idx in range(indices.shape[-1]):
+            group_tokens = indices[:, group_idx]
+            per_group_usage[group_idx] = (
+                group_tokens.unique().numel() / total_codes * 100
+            )
+
+        metrics = {
+            "active_percent_avg": per_group_usage.mean().item(),
+            "active_percent_min": per_group_usage.min().item(),
+            "active_percent_max": per_group_usage.max().item(),
+            "codebook/unique_codes": unique_count,
+            "codebook/total_codes": total_codes,
+            "codebook/usage_percent": usage_percent,
+            "codebook/per_group_usage_mean": per_group_usage.mean().item(),
+            "codebook/per_group_usage_min": per_group_usage.min().item(),
+            "codebook/per_group_usage_max": per_group_usage.max().item(),
+        }
+
+        per_dim_bins, per_dim_levels = self._token_to_message(flat_tokens)
+        if per_dim_bins is None or per_dim_levels is None:
+            return metrics
+
+        per_dim_usage, per_dim_entropy = [], []
+        for dim_idx in range(per_dim_bins.shape[-1]):
+            bins = per_dim_bins[:, dim_idx]
+            n_levels = per_dim_levels[dim_idx]
+            unique_count = bins.unique().numel()
+            per_dim_usage.append(unique_count / n_levels)
+
+            counts = torch.bincount(bins, minlength=n_levels)
+            probs = counts.float() / counts.sum()
+            probs = probs[probs > 0]
+            entropy = -(probs * probs.log2()).sum().item()
+            max_entropy = math.log2(n_levels)
+            per_dim_entropy.append(entropy / max_entropy if max_entropy > 0 else 0.0)
+
+        metrics.update(
+            {
+                "codebook/per_dim_usage_mean": float(sum(per_dim_usage) / len(per_dim_usage)),
+                "codebook/per_dim_usage_min": float(min(per_dim_usage)),
+                "codebook/per_dim_entropy_mean": float(
+                    sum(per_dim_entropy) / len(per_dim_entropy)
+                ),
+                "codebook/per_dim_entropy_min": float(min(per_dim_entropy)),
+            }
+        )
+        return metrics
+
+    @torch.no_grad()
+    def _token_to_message(
+        self, tokens: torch.Tensor
+    ) -> Tuple[Optional[torch.Tensor], Optional[List[int]]]:
+        if isinstance(self._quantizer, DDCLQuantizer):
+            shifted = tokens.unsqueeze(-1) // self._quantizer._offsets.long()
+            shifted = shifted % self._quantizer.n_levels
+            return shifted, [self._quantizer.n_levels] * self._quantizer.n_dims
+
+        if isinstance(self._quantizer, FSQ):
+            levels = torch.tensor(
+                self._quantizer.levels, device=tokens.device, dtype=torch.long
+            )
+            offsets = torch.ones_like(levels)
+            if len(levels) > 1:
+                offsets[:-1] = torch.flip(
+                    torch.cumprod(torch.flip(levels[1:], dims=[0]), dim=0),
+                    dims=[0],
+                )
+            shifted = tokens.unsqueeze(-1) // offsets
+            shifted = shifted % levels
+            return shifted, self._quantizer.levels
+
+        return None, None
 
     @property
     def total_params(self):
@@ -954,6 +1014,14 @@ class DCMPC(nn.Module):
 
     def metrics(self, batch):
         metrics = self.model.metrics(batch)
+        metrics.update({"model": h.calc_mean_opt_moments(self.model_opt)})
+        metrics.update({"Q": h.calc_mean_opt_moments(self.q_opt)})
+        metrics.update({"pi": h.calc_mean_opt_moments(self.pi_opt)})
+        return metrics
+
+    @torch.no_grad()
+    def metrics_from_observations(self, observations):
+        metrics = self.model.metrics_from_observations(observations)
         metrics.update({"model": h.calc_mean_opt_moments(self.model_opt)})
         metrics.update({"Q": h.calc_mean_opt_moments(self.q_opt)})
         metrics.update({"pi": h.calc_mean_opt_moments(self.pi_opt)})
