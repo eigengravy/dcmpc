@@ -525,7 +525,7 @@ class WorldModel(nn.Module):
 
             # DDCL-specific: comms bits (info rate without lambda weighting)
             if isinstance(self._quantizer, DDCLQuantizer):
-                z_bounded = z["z"]  # pre-quantized bounded values
+                z_bounded = self._quantizer.scale * torch.tanh(z["z"])
                 comms_bits = torch.log2(
                     z_bounded.abs() / self._quantizer.delta + 1.0
                 ).mean()
