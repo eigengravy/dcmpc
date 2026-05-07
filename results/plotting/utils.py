@@ -32,4 +32,13 @@ YLABELS = {
     "active_percent": "Codebook Active Percent (\%)",
     "rank1": "Matrix Rank",
     "rank_percent_1": "Matrix Rank (\% of full)",
+    "episodic_return": "Episode Return",
+    "episodic_success": "Success Rate",
+    "rate/allocated_bits_per_transition": "Allocated Bits / Transition",
+    "rate/max_bits_per_transition": "Max Bits / Transition",
+    "rate/compression_ratio_vs_max": "Allocated / Max Bits",
+    "rate/empirical_entropy_bits_per_transition": "Empirical Entropy Bits / Transition",
+    "codebook/per_group_entropy_mean": "Code Entropy (normalized)",
+    "codebook/usage_percent": "Active Codes (\%)",
+    "comms_bits": "DDCL Bits / Latent Dim",
 }

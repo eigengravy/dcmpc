@@ -1,8 +1,5 @@
 #!/usr/bin/env python3
 import gymnasium as gym
-from dm_control import suite
-from envs.tasks import ball_in_cup, pendulum
-from metaworld import ALL_V3_ENVIRONMENTS_GOAL_OBSERVABLE
 from omegaconf import OmegaConf
 from torchrl.envs import GymEnv, ParallelEnv, SerialEnv, StepCounter, TransformedEnv
 from torchrl.envs.transforms import (
@@ -17,14 +14,52 @@ from torchrl.envs.transforms import (
 )
 from torchrl.record import VideoRecorder
 
-from .dmcontrol import make_env as dmcontrol_make_env
-from .metaworld import make_env as metaworld_make_env
-from .myosuite import make_env as myosuite_make_env
-from .myosuite import MYOSUITE_TASKS
+
+_DMCONTROL = None
+_METAWORLD = None
+_MYOSUITE = None
 
 
-suite.ALL_TASKS = suite.ALL_TASKS + suite._get_tasks("custom")
-suite.TASKS_BY_DOMAIN = suite._get_tasks_by_domain(suite.ALL_TASKS)
+def _get_dmcontrol():
+    global _DMCONTROL
+    if _DMCONTROL is None:
+        from dm_control import suite
+        from envs.tasks import ball_in_cup, pendulum  # noqa: F401
+        from .dmcontrol import make_env as dmcontrol_make_env
+
+        if not getattr(suite, "_dcmpc_custom_tasks_registered", False):
+            suite.ALL_TASKS = suite.ALL_TASKS + suite._get_tasks("custom")
+            suite.TASKS_BY_DOMAIN = suite._get_tasks_by_domain(suite.ALL_TASKS)
+            suite._dcmpc_custom_tasks_registered = True
+        _DMCONTROL = (suite, dmcontrol_make_env)
+    return _DMCONTROL
+
+
+def _get_metaworld():
+    global _METAWORLD
+    if _METAWORLD is None:
+        from metaworld import ALL_V3_ENVIRONMENTS_GOAL_OBSERVABLE
+        from .metaworld import make_env as metaworld_make_env
+
+        _METAWORLD = (ALL_V3_ENVIRONMENTS_GOAL_OBSERVABLE, metaworld_make_env)
+    return _METAWORLD
+
+
+def _get_myosuite():
+    global _MYOSUITE
+    if _MYOSUITE is None:
+        try:
+            from .myosuite import MYOSUITE_TASKS
+            from .myosuite import make_env as myosuite_make_env
+        except ImportError:
+            MYOSUITE_TASKS = {}
+            myosuite_make_env = None
+        _MYOSUITE = (MYOSUITE_TASKS, myosuite_make_env)
+    return _MYOSUITE
+
+
+def _metaworld_env_name(env_name: str) -> str:
+    return env_name.split("mw-", 1)[-1] + "-v3-goal-observable"
 
 
 def make_env(
@@ -75,7 +110,13 @@ def make_env(
         )
 
     # In DMControl set cfg.agent.r_min=0 and cfg.agent.r_max=1*action_repeat
-    if (cfg.env_name, cfg.task_name) in suite.ALL_TASKS or cfg.env_name == "cup":
+    dmcontrol = None
+    if not cfg.env_name.startswith("mw-"):
+        dmcontrol = _get_dmcontrol()
+
+    if dmcontrol and (
+        (cfg.env_name, cfg.task_name) in dmcontrol[0].ALL_TASKS or cfg.env_name == "cup"
+    ):
         OmegaConf.update(cfg.agent, "r_min", 0.0)
         OmegaConf.update(cfg.agent, "r_max", 1.0 * cfg.action_repeat)
     else:
@@ -90,35 +131,46 @@ def make_env_fn(cfg, record_video: bool = False):
         env = GymEnv(
             env_name=cfg.env_name, frame_skip=cfg.action_repeat, device=cfg.env_device
         )
-    elif (cfg.env_name, cfg.task_name) in suite.ALL_TASKS or cfg.env_name == "cup":
-        env = dmcontrol_make_env(
-            env_name=cfg.env_name,
-            task_name=cfg.task_name,
-            from_pixels=record_video,
-            frame_skip=cfg.action_repeat,
-            device=cfg.env_device,
-        )
-    elif (
-        cfg.env_name.split("mw-", 1)[-1] + "-v3-goal-observable"
-        in ALL_V3_ENVIRONMENTS_GOAL_OBSERVABLE
-    ):
+    elif cfg.env_name.startswith("mw-"):
+        metaworld_registry, metaworld_make_env = _get_metaworld()
+        env_name = _metaworld_env_name(cfg.env_name)
+        if env_name not in metaworld_registry:
+            raise KeyError(f"Unknown Meta-World environment: {cfg.env_name}")
         env = metaworld_make_env(
-            env_name=cfg.env_name.split("-", 1)[-1] + "-v3-goal-observable",
+            env_name=env_name,
             from_pixels=record_video,
             seed=cfg.seed,
             frame_skip=cfg.action_repeat,
             device=cfg.env_device,
             max_episode_steps=cfg.max_episode_steps,
         )
-    elif cfg.env_name in MYOSUITE_TASKS:
-        env = myosuite_make_env(
-            env_name=cfg.env_name,
-            from_pixels=record_video,
-            seed=cfg.seed,
-            frame_skip=cfg.action_repeat,
-            device=cfg.env_device,
-            max_episode_steps=cfg.max_episode_steps,
-        )
+    else:
+        suite, dmcontrol_make_env = _get_dmcontrol()
+        if (cfg.env_name, cfg.task_name) in suite.ALL_TASKS or cfg.env_name == "cup":
+            env = dmcontrol_make_env(
+                env_name=cfg.env_name,
+                task_name=cfg.task_name,
+                from_pixels=record_video,
+                frame_skip=cfg.action_repeat,
+                device=cfg.env_device,
+            )
+        else:
+            myosuite_tasks, myosuite_make_env = _get_myosuite()
+            if cfg.env_name not in myosuite_tasks:
+                raise KeyError(f"Unknown environment: {cfg.env_name}")
+            if myosuite_make_env is None:
+                raise ImportError(
+                    "MyoSuite is required for MyoSuite tasks. Install myosuite or use "
+                    "the ddcl_mbrl environment for DMControl and Meta-World only."
+                )
+            env = myosuite_make_env(
+                env_name=cfg.env_name,
+                from_pixels=record_video,
+                seed=cfg.seed,
+                frame_skip=cfg.action_repeat,
+                device=cfg.env_device,
+                max_episode_steps=cfg.max_episode_steps,
+            )
 
     env = TransformedEnv(
         env,

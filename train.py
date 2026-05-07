@@ -43,7 +43,7 @@ def train(cfg: TrainConfig):
     from termcolor import colored
     from torchrl.data import Bounded
     from torchrl.record.loggers.wandb import WandbLogger
-    from utils import evaluate, ReplayBuffer
+    from utils import evaluate, ReplayBuffer, summarize_rollout_info
 
     logger = logging.getLogger(__name__)
 
@@ -231,6 +231,7 @@ def train(cfg: TrainConfig):
             if isinstance(episode_success, torch.Tensor):
                 episode_success = episode_success.item()
             rollout_metrics.update({"episodic_success": int(episode_success)})
+        rollout_metrics.update(summarize_rollout_info(data))
 
         if cfg.verbose:
             h.print_metrics(cfg, episode_idx, step, rollout_metrics, eval_mode=False)

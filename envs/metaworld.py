@@ -8,6 +8,17 @@ from metaworld import ALL_V3_ENVIRONMENTS_GOAL_OBSERVABLE
 from torchrl.envs import default_info_dict_reader, GymWrapper
 
 
+METAWORLD_INFO_KEYS = [
+    "success",
+    "near_object",
+    "grasp_success",
+    "grasp_reward",
+    "in_place_reward",
+    "obj_to_target",
+    "unscaled_reward",
+]
+
+
 class MetaWorldWrapper(gym.Wrapper):
     def __init__(self, env, action_repeat: int = 2):
         super().__init__(env)
@@ -34,6 +45,8 @@ class MetaWorldWrapper(gym.Wrapper):
                 break
         obs = obs.astype(np.float32)
         info.update({"success": success})
+        for key in METAWORLD_INFO_KEYS:
+            info.setdefault(key, 0.0)
         return (obs, reward, terminated, truncated, info)
 
     @property
@@ -67,7 +80,7 @@ def make_env(
     env = TimeLimit(env, max_episode_steps=max_episode_steps)
     # env.max_episode_steps = env._max_episode_steps
 
-    reader = default_info_dict_reader(["success"])
+    reader = default_info_dict_reader(METAWORLD_INFO_KEYS)
     env = GymWrapper(
         env=env,
         # TODO metaworld doesn't work with from_pixels=True

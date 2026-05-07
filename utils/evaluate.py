@@ -5,6 +5,62 @@ import torch
 from tensordict.nn import TensorDictModule
 
 
+INFO_METRIC_KEYS = (
+    "success",
+    "near_object",
+    "grasp_success",
+    "grasp_reward",
+    "in_place_reward",
+    "obj_to_target",
+    "unscaled_reward",
+    "inside_gate",
+    "gate_region",
+    "collision",
+    "goal_reached",
+    "distance_to_goal",
+    "distance_to_button",
+    "distance_to_handle",
+    "door_angle",
+)
+
+
+def summarize_rollout_info(data, keys=INFO_METRIC_KEYS):
+    """Aggregate optional environment info signals from a rollout TensorDict."""
+    metrics = {}
+    next_data = data.get("next", None)
+    if next_data is None:
+        return metrics
+
+    for key in keys:
+        value = next_data.get(key, None)
+        if value is None or not torch.is_tensor(value):
+            continue
+        is_numeric = (
+            torch.is_floating_point(value)
+            or value.dtype == torch.bool
+            or value.dtype in (torch.int8, torch.int16, torch.int32, torch.int64)
+            or value.dtype in (torch.uint8,)
+        )
+        if value.numel() == 0 or not is_numeric:
+            continue
+
+        value = value.to(torch.float)
+        safe_key = key.replace("/", "_")
+        metrics[f"{safe_key}_mean"] = value.mean()
+        metrics[f"{safe_key}_max"] = value.amax()
+        if value.ndim >= 3:
+            final_value = value[:, -1].mean()
+        elif value.ndim >= 2 and value.shape[-1] == 1:
+            final_value = value[-1].mean()
+        elif value.ndim >= 2:
+            final_value = value[:, -1].mean()
+        else:
+            final_value = value[-1]
+        metrics[f"{safe_key}_final"] = final_value
+
+    return metrics
+
+
 def evaluate(
     env,
     eval_policy_module: TensorDictModule,
@@ -31,6 +87,7 @@ def evaluate(
         if success is not None:
             episodic_success = torch.mean(success.any(-1).to(torch.float))
             eval_metrics.update({"episodic_success": episodic_success})
+        eval_metrics.update(summarize_rollout_info(eval_data))
 
     ##### Eval metrics #####
     eval_metrics.update(

@@ -509,6 +509,11 @@ class WorldModel(nn.Module):
                     "r_mean": r_pred.mean().item(),
                 }
             )
+            for horizon_idx, value in enumerate(_reward_loss.mean(dim=-1), start=1):
+                info[f"wm/reward_loss_h{horizon_idx}"] = value.item()
+        if self.cfg.use_tc_loss:
+            for horizon_idx, value in enumerate(_tc_loss.mean(dim=-1), start=1):
+                info[f"wm/tc_loss_h{horizon_idx}"] = value.item()
         return loss, info
 
     def metrics(self, batch):
@@ -519,23 +524,97 @@ class WorldModel(nn.Module):
         z = self.encode(observations)
 
         metrics = h.calc_rank(name="z", z=z["state"])
+        metrics.update(
+            {
+                "quantizer/num_channels": self.num_channels,
+            }
+        )
 
         if self._uses_discrete:
+            metrics.update(self._compute_rate_metrics(z))
             metrics.update(self._compute_codebook_metrics(z["indices"]))
 
             # DDCL-specific: comms bits (info rate without lambda weighting)
             if isinstance(self._quantizer, DDCLQuantizer):
                 z_bounded = self._quantizer.scale * torch.tanh(z["z"])
-                comms_bits = torch.log2(
-                    z_bounded.abs() / self._quantizer.delta + 1.0
-                ).mean()
+                comms_bits = torch.log2(z_bounded.abs() / self._quantizer.delta + 1.0)
+                signed_comms_bits = torch.log2(
+                    2.0 * z_bounded.abs() / self._quantizer.delta + 1.0
+                )
                 metrics.update(
                     {
-                        "comms_bits": comms_bits.item(),
+                        "comms_bits": comms_bits.mean().item(),
+                        "rate/ddcl_loss_bits_per_dim": comms_bits.mean().item(),
+                        "rate/ddcl_signed_bits_per_dim": signed_comms_bits.mean().item(),
+                        "rate/ddcl_signed_bits_per_transition": signed_comms_bits.sum(
+                            dim=(-2, -1)
+                        )
+                        .mean()
+                        .item(),
                     }
                 )
 
         return metrics
+
+    @torch.no_grad()
+    def _compute_rate_metrics(self, z: TensorDict) -> dict:
+        indices = z["indices"]
+        if indices.ndim == 1:
+            indices = indices.unsqueeze(-1)
+
+        num_groups = indices.shape[-1]
+        codebook_size = int(self._quantizer.codebook_size)
+        max_bits_per_group = math.log2(codebook_size)
+        max_bits_per_transition = num_groups * max_bits_per_group
+        empirical_entropy_bits = self._empirical_entropy_bits(indices, codebook_size)
+
+        if isinstance(self._quantizer, DDCLQuantizer):
+            z_bounded = self._quantizer.scale * torch.tanh(z["z"])
+            allocated_bits = torch.log2(
+                2.0 * z_bounded.abs() / self._quantizer.delta + 1.0
+            ).sum(dim=(-2, -1))
+            allocated_bits_per_transition = allocated_bits.mean().item()
+        else:
+            allocated_bits_per_transition = max_bits_per_transition
+
+        compression_ratio = (
+            allocated_bits_per_transition / max_bits_per_transition
+            if max_bits_per_transition > 0
+            else 0.0
+        )
+        empirical_entropy_ratio = (
+            empirical_entropy_bits / max_bits_per_transition
+            if max_bits_per_transition > 0
+            else 0.0
+        )
+
+        return {
+            "rate/num_groups": num_groups,
+            "rate/codebook_size": codebook_size,
+            "rate/max_bits_per_group": max_bits_per_group,
+            "rate/max_bits_per_transition": max_bits_per_transition,
+            "rate/allocated_bits_per_transition": allocated_bits_per_transition,
+            "rate/allocated_bits_per_group": allocated_bits_per_transition / num_groups,
+            "rate/compression_ratio_vs_max": compression_ratio,
+            "rate/savings_ratio_vs_max": 1.0 - compression_ratio,
+            "rate/empirical_entropy_bits_per_transition": empirical_entropy_bits,
+            "rate/empirical_entropy_bits_per_group": empirical_entropy_bits / num_groups,
+            "rate/empirical_entropy_ratio_vs_max": empirical_entropy_ratio,
+        }
+
+    @torch.no_grad()
+    def _empirical_entropy_bits(self, indices: torch.Tensor, codebook_size: int) -> float:
+        if indices.ndim == 1:
+            indices = indices.unsqueeze(-1)
+
+        total_entropy = 0.0
+        for group_idx in range(indices.shape[-1]):
+            group_tokens = indices[:, group_idx].reshape(-1).to(torch.long)
+            counts = torch.bincount(group_tokens, minlength=codebook_size)
+            probs = counts.float() / counts.sum().clamp_min(1)
+            probs = probs[probs > 0]
+            total_entropy += float(-(probs * probs.log2()).sum().item())
+        return total_entropy
 
     @torch.no_grad()
     def _compute_codebook_metrics(self, indices: torch.Tensor) -> dict:
@@ -550,11 +629,17 @@ class WorldModel(nn.Module):
         per_group_usage = torch.empty(
             indices.shape[-1], device=indices.device, dtype=torch.float32
         )
+        per_group_entropy = torch.empty_like(per_group_usage)
         for group_idx in range(indices.shape[-1]):
             group_tokens = indices[:, group_idx]
             per_group_usage[group_idx] = (
                 group_tokens.unique().numel() / total_codes * 100
             )
+            counts = torch.bincount(group_tokens.reshape(-1).to(torch.long), minlength=total_codes)
+            probs = counts.float() / counts.sum().clamp_min(1)
+            probs = probs[probs > 0]
+            entropy = -(probs * probs.log2()).sum()
+            per_group_entropy[group_idx] = entropy / math.log2(total_codes)
 
         metrics = {
             "active_percent_avg": per_group_usage.mean().item(),
@@ -566,6 +651,14 @@ class WorldModel(nn.Module):
             "codebook/per_group_usage_mean": per_group_usage.mean().item(),
             "codebook/per_group_usage_min": per_group_usage.min().item(),
             "codebook/per_group_usage_max": per_group_usage.max().item(),
+            "codebook/per_group_entropy_mean": per_group_entropy.mean().item(),
+            "codebook/per_group_entropy_min": per_group_entropy.min().item(),
+            "codebook/per_group_entropy_max": per_group_entropy.max().item(),
+            "codebook/per_group_perplexity_mean": (
+                2.0 ** (per_group_entropy * math.log2(total_codes))
+            )
+            .mean()
+            .item(),
         }
 
         per_dim_bins, per_dim_levels = self._token_to_message(flat_tokens)
