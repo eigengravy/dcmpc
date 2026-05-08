@@ -47,6 +47,13 @@ class TrainConfig:
 
     scale_reward: bool = False  # it true scale rewards using symlog
 
+    # Toy Precision Gate parameters (used only when env_name="toy-precision-gate")
+    toy_gate_width: float = 0.08
+    toy_action_scale: float = 0.08
+    toy_goal_threshold: float = 0.08
+    toy_spawn_y_noise: float = 0.35
+    toy_collision_terminates: bool = True
+
     # Evaluation
     eval_every_episodes: int = 25  # every 25k env steps
     num_eval_episodes: int = 10

@@ -41,4 +41,10 @@ YLABELS = {
     "codebook/per_group_entropy_mean": "Code Entropy (normalized)",
     "codebook/usage_percent": "Active Codes (\%)",
     "comms_bits": "DDCL Bits / Latent Dim",
+    "control/state_norm_mean": "State Norm",
+    "control/state_delta_norm_mean": "State Delta Norm",
+    "control/action_norm_mean": "Action Norm",
+    "control/action_abs_mean": "Mean Absolute Action",
+    "control/action_saturation_frac": "Action Saturation Fraction",
+    "control/reward_step_mean": "Mean Step Reward",
 }

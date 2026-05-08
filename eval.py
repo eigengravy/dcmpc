@@ -3,6 +3,28 @@ import hydra
 from config import EvalConfig
 
 
+def _agent_spec(spec, env):
+    batch_size = getattr(env, "batch_size", None)
+    if batch_size is not None and len(batch_size) > 0:
+        return spec[0]
+    return spec
+
+
+class _NoOpExperiment:
+    def save(self, *args, **kwargs):
+        return None
+
+
+class _NoOpLogger:
+    experiment = _NoOpExperiment()
+
+    def log_hparams(self, *args, **kwargs):
+        return None
+
+    def log_scalar(self, *args, **kwargs):
+        return None
+
+
 @hydra.main(version_base="1.3", config_path="./cfgs", config_name="eval")
 def eval_checkpoint(cfg: EvalConfig):
     import logging
@@ -54,17 +76,20 @@ def eval_checkpoint(cfg: EvalConfig):
         train_cfg.agent.device = "cpu"
 
     ###### Initialise W&B ######
-    writer = WandbLogger(
-        exp_name=cfg.run_name,
-        offline=not cfg.use_wandb,
-        project=cfg.wandb_project_name,
-        group=f"{train_cfg.env_name}-{train_cfg.task_name}",
-        tags=[
-            f"{train_cfg.env_name}-{train_cfg.task_name}",
-            f"seed={str(train_cfg.seed)}",
-        ],
-        save_code=True,
-    )
+    if cfg.use_wandb:
+        writer = WandbLogger(
+            exp_name=cfg.run_name,
+            offline=False,
+            project=cfg.wandb_project_name,
+            group=f"{train_cfg.env_name}-{train_cfg.task_name}",
+            tags=[
+                f"{train_cfg.env_name}-{train_cfg.task_name}",
+                f"seed={str(train_cfg.seed)}",
+            ],
+            save_code=True,
+        )
+    else:
+        writer = _NoOpLogger()
     writer.log_hparams(cfg)
     writer.log_hparams(
         {
@@ -94,8 +119,8 @@ def eval_checkpoint(cfg: EvalConfig):
     ###### Init agent ######
     agent = DCMPC(
         train_cfg.agent,
-        obs_spec=eval_env.observation_spec["observation"][0],
-        act_spec=eval_env.action_spec[0],
+        obs_spec=_agent_spec(eval_env.observation_spec["observation"], eval_env),
+        act_spec=_agent_spec(eval_env.action_spec, eval_env),
     ).to(cfg.device)
 
     # Load state dict into this agent from filepath (or dictionary)

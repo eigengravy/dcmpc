@@ -15,9 +15,15 @@ def print_run(cfg, env):
         key = key + ":"
         print(colored(f"  {key:<20}", color, attrs=["bold"]), f"{value:<30}")
 
+    def agent_spec(spec):
+        batch_size = getattr(env, "batch_size", None)
+        if batch_size is not None and len(batch_size) > 0:
+            return spec[0]
+        return spec
+
     task = cfg.env_name if cfg.task_name == "" else cfg.env_name + "-" + cfg.task_name
-    obs_spec = env.observation_spec["observation"][0]
-    act_spec = env.action_spec[0]
+    obs_spec = agent_spec(env.observation_spec["observation"])
+    act_spec = agent_spec(env.action_spec)
 
     data = [
         ("Task", task),

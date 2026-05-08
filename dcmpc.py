@@ -16,7 +16,14 @@ import wandb
 from einops import einsum, rearrange
 from tensordict import TensorDict
 from torch.amp import autocast, GradScaler
-from torchrl.data import Bounded, Composite
+try:
+    from torchrl.data import Bounded
+except ImportError:
+    from torchrl.data import BoundedTensorSpec as Bounded
+try:
+    from torchrl.data import Composite
+except ImportError:
+    from torchrl.data import CompositeSpec as Composite
 from utils import ReplayBuffer, ReplayBufferSamples
 from utils.layers import DDCLQuantizer, FSQ, VQQuantizer, mlp, mlp_ensemble
 
@@ -930,6 +937,7 @@ class DCMPC(nn.Module):
         z = self.model.encode(obs).to(torch.float)
         if self.cfg.mpc:
             a, self.mppi_std = self.plan(z, t0=t0, eval_mode=eval_mode)
+            a = a[0] if is_flat_obs else a
         else:
             a = self.pi(z["codes"], tar=False, eval_mode=eval_mode)
             a = a[0] if is_flat_obs else a

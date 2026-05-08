@@ -1,0 +1,31 @@
+# @package _global_
+env_name: "toy-precision-gate"
+task_name: ""
+vec_env: false
+num_episodes: 1200
+max_episode_steps: 80
+eval_every_episodes: 25
+num_eval_episodes: 20
+action_repeat: 1
+buffer_size: 200000
+random_episodes: 5
+toy_gate_width: 0.08
+toy_action_scale: 0.08
+toy_goal_threshold: 0.08
+toy_spawn_y_noise: 0.35
+toy_collision_terminates: true
+
+agent:
+  latent_dim: 64
+  horizon: 8
+  plan_horizon: 8
+  batch_size: 256
+  nstep: 3
+  enc_mlp_dims: [128, 128]
+  mlp_dims: [256, 256]
+  num_samples: 256
+  num_elites: 32
+  num_pi_trajs: 12
+  iterations: 4
+  exploration_noise_num_steps: 50
+  logging_freq: 25

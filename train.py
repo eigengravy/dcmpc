@@ -5,6 +5,42 @@ import hydra
 from config import TrainConfig
 
 
+def _agent_spec(spec, env):
+    batch_size = getattr(env, "batch_size", None)
+    if batch_size is not None and len(batch_size) > 0:
+        return spec[0]
+    return spec
+
+
+def _single_rollout(data, env):
+    batch_size = getattr(env, "batch_size", None)
+    if batch_size is not None and len(batch_size) > 0:
+        return data[0]
+    return data
+
+
+def _flat_observations(data):
+    observations = data["observation"]
+    if len(observations.batch_size) > 1:
+        return observations.flatten()
+    return observations
+
+
+class _NoOpExperiment:
+    def save(self, *args, **kwargs):
+        return None
+
+
+class _NoOpLogger:
+    experiment = _NoOpExperiment()
+
+    def log_hparams(self, *args, **kwargs):
+        return None
+
+    def log_scalar(self, *args, **kwargs):
+        return None
+
+
 @hydra.main(version_base="1.3", config_path="./cfgs", config_name="train")
 def cluster_safe_train(cfg: TrainConfig):
     """Wrapper to ensure errors are logged properly when using hydra's submitit launcher
@@ -41,9 +77,17 @@ def train(cfg: TrainConfig):
     from omegaconf import OmegaConf
     from tensordict.nn import TensorDictModule
     from termcolor import colored
-    from torchrl.data import Bounded
+    try:
+        from torchrl.data import Bounded
+    except ImportError:
+        from torchrl.data import BoundedTensorSpec as Bounded
     from torchrl.record.loggers.wandb import WandbLogger
-    from utils import evaluate, ReplayBuffer, summarize_rollout_info
+    from utils import (
+        evaluate,
+        ReplayBuffer,
+        summarize_continuous_control,
+        summarize_rollout_info,
+    )
 
     logger = logging.getLogger(__name__)
 
@@ -64,19 +108,22 @@ def train(cfg: TrainConfig):
     consistency_loss = cfg.agent.get("consistency_loss", "cross-entropy") if hasattr(cfg.agent, "get") else getattr(cfg.agent, "consistency_loss", "cross-entropy")
     task_tag = f"{cfg.env_name}-{cfg.task_name}"
     exp_name = f"{task_tag}-{quantizer_type}-{consistency_loss}-s{cfg.seed}"
-    writer = WandbLogger(
-        exp_name=exp_name,
-        offline=not cfg.use_wandb,
-        project=cfg.wandb_project_name,
-        group=task_tag,
-        tags=[
-            task_tag,
-            f"quantizer={quantizer_type}",
-            f"consistency={consistency_loss}",
-            f"seed={str(cfg.seed)}",
-        ],
-        save_code=True,
-    )
+    if cfg.use_wandb:
+        writer = WandbLogger(
+            exp_name=exp_name,
+            offline=False,
+            project=cfg.wandb_project_name,
+            group=task_tag,
+            tags=[
+                task_tag,
+                f"quantizer={quantizer_type}",
+                f"consistency={consistency_loss}",
+                f"seed={str(cfg.seed)}",
+            ],
+            save_code=True,
+        )
+    else:
+        writer = _NoOpLogger()
 
     ###### Setup vectorized environment for training/evaluation/video recording ######
     env = make_env(cfg, num_envs=1)
@@ -112,8 +159,8 @@ def train(cfg: TrainConfig):
     ###### Init agent ######
     agent = DCMPC(
         cfg.agent,
-        obs_spec=env.observation_spec["observation"][0],
-        act_spec=env.action_spec[0],
+        obs_spec=_agent_spec(env.observation_spec["observation"], env),
+        act_spec=_agent_spec(env.action_spec, env),
     ).to(cfg.device)
     if cfg.checkpoint is not None:
         # Load state dict into this agent from filepath (or dictionary)
@@ -172,7 +219,7 @@ def train(cfg: TrainConfig):
             h.print_metrics(cfg, episode_idx, step, eval_metrics, eval_mode=True)
 
         ##### Log latent/codebook metrics over the full eval rollout #####
-        eval_observations = eval_data["observation"].flatten()
+        eval_observations = _flat_observations(eval_data)
         eval_metrics.update(agent.metrics_from_observations(eval_observations))
 
         ##### Log metrics to W&B or csv #####
@@ -201,7 +248,8 @@ def train(cfg: TrainConfig):
             data = env.rollout(
                 max_steps=cfg.max_episode_steps // cfg.action_repeat,
                 policy=None if episode_idx <= cfg.random_episodes else policy_module,
-            )[0]
+            )
+            data = _single_rollout(data, env)
         rollout_time = time.time() - episode_start_time
 
         if cfg.scale_reward:
@@ -232,6 +280,7 @@ def train(cfg: TrainConfig):
                 episode_success = episode_success.item()
             rollout_metrics.update({"episodic_success": int(episode_success)})
         rollout_metrics.update(summarize_rollout_info(data))
+        rollout_metrics.update(summarize_continuous_control(data))
 
         if cfg.verbose:
             h.print_metrics(cfg, episode_idx, step, rollout_metrics, eval_mode=False)

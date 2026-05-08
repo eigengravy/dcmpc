@@ -18,6 +18,7 @@ from torchrl.record import VideoRecorder
 _DMCONTROL = None
 _METAWORLD = None
 _MYOSUITE = None
+_TOY_ENVS = {"toy-precision-gate"}
 
 
 def _get_dmcontrol():
@@ -62,10 +63,16 @@ def _metaworld_env_name(env_name: str) -> str:
     return env_name.split("mw-", 1)[-1] + "-v3-goal-observable"
 
 
+def _is_toy_env(env_name: str) -> bool:
+    return env_name in _TOY_ENVS
+
+
 def make_env(
     cfg, num_envs: int = 1, record_video: bool = False, tag: str = "eval", logger=None
 ):
-    if record_video or not cfg.vec_env:
+    if not cfg.vec_env:
+        env = make_env_fn(cfg, record_video=record_video)
+    elif record_video:
         # assert num_envs == 1
         env = SerialEnv(
             num_envs,
@@ -111,7 +118,7 @@ def make_env(
 
     # In DMControl set cfg.agent.r_min=0 and cfg.agent.r_max=1*action_repeat
     dmcontrol = None
-    if not cfg.env_name.startswith("mw-"):
+    if not cfg.env_name.startswith("mw-") and not _is_toy_env(cfg.env_name):
         dmcontrol = _get_dmcontrol()
 
     if dmcontrol and (
@@ -130,6 +137,20 @@ def make_env_fn(cfg, record_video: bool = False):
     if cfg.env_name in gym.envs.registry.keys():
         env = GymEnv(
             env_name=cfg.env_name, frame_skip=cfg.action_repeat, device=cfg.env_device
+        )
+    elif _is_toy_env(cfg.env_name):
+        from .toy_precision_gate import make_env as toy_precision_gate_make_env
+
+        env = toy_precision_gate_make_env(
+            seed=cfg.seed,
+            frame_skip=cfg.action_repeat,
+            device=cfg.env_device,
+            max_episode_steps=cfg.max_episode_steps,
+            gate_width=cfg.get("toy_gate_width", 0.08),
+            action_scale=cfg.get("toy_action_scale", 0.08),
+            goal_threshold=cfg.get("toy_goal_threshold", 0.08),
+            spawn_y_noise=cfg.get("toy_spawn_y_noise", 0.35),
+            collision_terminates=cfg.get("toy_collision_terminates", True),
         )
     elif cfg.env_name.startswith("mw-"):
         metaworld_registry, metaworld_make_env = _get_metaworld()

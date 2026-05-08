@@ -1,1 +1,15 @@
 __pycache__
+*.pyc
+.DS_Store
+
+# Local/private research planning and experiment bookkeeping.
+# These files are intentionally kept out of GitHub because they may contain
+# speculative paper strategy, failed runs, cluster paths, W&B links, and notes.
+private/
+research_notes/
+
+# Local outputs and caches.
+output/
+outputs/
+wandb/
+paper_metric_plots/

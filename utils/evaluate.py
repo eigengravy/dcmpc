@@ -18,6 +18,10 @@ INFO_METRIC_KEYS = (
     "collision",
     "goal_reached",
     "distance_to_goal",
+    "distance_to_gate",
+    "crossed_gate",
+    "y_error_at_gate",
+    "progress",
     "distance_to_button",
     "distance_to_handle",
     "door_angle",
@@ -61,6 +65,76 @@ def summarize_rollout_info(data, keys=INFO_METRIC_KEYS):
     return metrics
 
 
+def summarize_continuous_control(data):
+    """Aggregate generic diagnostics for continuous-control environments."""
+    metrics = {}
+    next_data = data.get("next", None)
+    if next_data is None:
+        return metrics
+
+    observation = data.get("observation", None)
+    next_observation = next_data.get("observation", None)
+    if observation is not None and next_observation is not None:
+        state = observation.get("state", None)
+        next_state = next_observation.get("state", None)
+        if torch.is_tensor(state) and torch.is_tensor(next_state):
+            state_norm = next_state.to(torch.float).norm(dim=-1)
+            metrics["control/state_norm_mean"] = state_norm.mean()
+            metrics["control/state_norm_max"] = state_norm.amax()
+            metrics["control/state_norm_final"] = _last_time_mean(state_norm)
+            if state.shape == next_state.shape:
+                state_delta_norm = (next_state - state).to(torch.float).norm(dim=-1)
+                metrics["control/state_delta_norm_mean"] = state_delta_norm.mean()
+                metrics["control/state_delta_norm_max"] = state_delta_norm.amax()
+                metrics["control/state_delta_norm_final"] = _last_time_mean(
+                    state_delta_norm
+                )
+
+    action = data.get("action", None)
+    if torch.is_tensor(action):
+        action = action.to(torch.float)
+        action_norm = action.norm(dim=-1)
+        metrics["control/action_norm_mean"] = action_norm.mean()
+        metrics["control/action_norm_max"] = action_norm.amax()
+        metrics["control/action_abs_mean"] = action.abs().mean()
+        metrics["control/action_saturation_frac"] = (
+            action.abs() > 0.95
+        ).to(torch.float).mean()
+
+    reward = next_data.get("reward", None)
+    if torch.is_tensor(reward):
+        reward = reward.to(torch.float)
+        metrics["control/reward_step_mean"] = reward.mean()
+        metrics["control/reward_step_std"] = (
+            reward.std() if reward.numel() > 1 else torch.zeros((), device=reward.device)
+        )
+        metrics["control/reward_step_final"] = _last_time_mean(reward)
+
+    return metrics
+
+
+def _last_time_mean(value):
+    if value.ndim >= 2:
+        return value[:, -1].mean()
+    if value.ndim == 1:
+        return value[-1]
+    return value.mean()
+
+
+def _final_episode_value(value):
+    if value.ndim >= 3:
+        return value[:, -1, 0]
+    if value.ndim >= 2:
+        return value[-1, 0]
+    return value[-1]
+
+
+def _episode_success(success):
+    if success.ndim >= 2:
+        return success.any(dim=-1).to(torch.float).mean()
+    return success.any().to(torch.float)
+
+
 def evaluate(
     env,
     eval_policy_module: TensorDictModule,
@@ -78,16 +152,18 @@ def evaluate(
             policy=eval_policy_module,
         )
         eval_episode_time = time.time() - eval_start_time
-        eval_episodic_return = torch.mean(eval_data["next"]["episode_reward"][:, -1, 0])
-        eval_episodic_return_std = torch.std(
-            eval_data["next"]["episode_reward"][:, -1, 0]
+        episode_returns = _final_episode_value(eval_data["next"]["episode_reward"])
+        eval_episodic_return = episode_returns.mean()
+        eval_episodic_return_std = (
+            episode_returns.std() if episode_returns.numel() > 1 else torch.zeros(())
         )
         success = eval_data["next"].get("success", None)
-        episode_len = eval_data["next"]["step_count"][0, -1, -1]
+        episode_len = _final_episode_value(eval_data["next"]["step_count"])
         if success is not None:
-            episodic_success = torch.mean(success.any(-1).to(torch.float))
+            episodic_success = _episode_success(success)
             eval_metrics.update({"episodic_success": episodic_success})
         eval_metrics.update(summarize_rollout_info(eval_data))
+        eval_metrics.update(summarize_continuous_control(eval_data))
 
     ##### Eval metrics #####
     eval_metrics.update(
