@@ -1,0 +1,15 @@
+# @package _global_
+defaults:
+  - toy-precision-gate
+  - _self_
+
+experiment_tag: "paper-v2"
+num_eval_episodes: 50
+early_stop_eval_success: 0.95
+early_stop_eval_patience: 2
+
+agent:
+  lr: 0.00005
+  actor_update_freq: 8
+  exploration_noise_end: 0.01
+  exploration_noise_num_steps: 250

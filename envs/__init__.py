@@ -70,6 +70,7 @@ def _is_toy_env(env_name: str) -> bool:
 def make_env(
     cfg, num_envs: int = 1, record_video: bool = False, tag: str = "eval", logger=None
 ):
+    seed_env = True
     if not cfg.vec_env:
         env = make_env_fn(cfg, record_video=record_video)
     elif record_video:
@@ -81,6 +82,15 @@ def make_env(
             serial_for_single=True,
             device=cfg.device,  # puts policy on device
         )
+    elif _is_toy_env(cfg.env_name):
+        env = SerialEnv(
+            num_envs,
+            make_env_fn,
+            create_env_kwargs={"cfg": cfg},
+            serial_for_single=True,
+            device=cfg.device,
+            shared_memory=False,
+        )
     else:
         env = ParallelEnv(
             num_envs,
@@ -91,16 +101,23 @@ def make_env(
         )
         try:
             env.set_seed(cfg.seed)
-        except AttributeError:
+            seed_env = False
+        except (AttributeError, RuntimeError, OSError):
+            try:
+                env.close()
+            except Exception:
+                pass
             env = SerialEnv(
                 num_envs,
                 make_env_fn,
                 create_env_kwargs={"cfg": cfg},
                 serial_for_single=True,
                 device=cfg.device,  # puts policy on device
+                shared_memory=False,
             )
 
-    env.set_seed(cfg.seed)
+    if seed_env:
+        env.set_seed(cfg.seed)
 
     if record_video:
         video_rec_in_keys = "pixels"

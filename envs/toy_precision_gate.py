@@ -90,7 +90,15 @@ class PrecisionGateEnv(gym.Env):
         ).astype(np.float32)
 
         crossed_now = prev_pos[0] < self.gate_x <= self.pos[0]
-        inside_gate = abs(self.pos[1]) <= self.gate_width
+        y_at_gate = float(self.pos[1])
+        if crossed_now:
+            step_dx = float(self.pos[0] - prev_pos[0])
+            if abs(step_dx) > 1e-12:
+                gate_fraction = float((self.gate_x - prev_pos[0]) / step_dx)
+                y_at_gate = float(
+                    prev_pos[1] + gate_fraction * float(self.pos[1] - prev_pos[1])
+                )
+        inside_gate = abs(y_at_gate) <= self.gate_width
         collision = crossed_now and not inside_gate
         if crossed_now and inside_gate:
             self.crossed_gate = True

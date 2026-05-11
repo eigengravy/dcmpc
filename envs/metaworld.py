@@ -22,6 +22,8 @@ METAWORLD_INFO_KEYS = [
 class MetaWorldWrapper(gym.Wrapper):
     def __init__(self, env, action_repeat: int = 2):
         super().__init__(env)
+        if action_repeat < 1:
+            raise ValueError(f"action_repeat must be >= 1, got {action_repeat}")
         self.env = env
         self.action_repeat = action_repeat
         self.camera_name = "corner2"
@@ -31,7 +33,8 @@ class MetaWorldWrapper(gym.Wrapper):
     def reset(self, **kwargs):
         obs, info = super().reset(**kwargs)
         obs = obs.astype(np.float32)
-        self.env.step(np.zeros(self.env.action_space.shape))
+        for key in METAWORLD_INFO_KEYS:
+            info.setdefault(key, 0.0)
         return obs, info
 
     def step(self, action):

@@ -1,11 +1,14 @@
 # @package _global_
 env_name: "toy-precision-gate"
 task_name: ""
-vec_env: false
+vec_env: true
 num_episodes: 1200
 max_episode_steps: 80
 eval_every_episodes: 25
 num_eval_episodes: 20
+restore_best_checkpoint_at_end: true
+early_stop_eval_success: 0.9
+early_stop_eval_patience: 1
 action_repeat: 1
 buffer_size: 200000
 random_episodes: 5
@@ -27,5 +30,9 @@ agent:
   num_elites: 32
   num_pi_trajs: 12
   iterations: 4
-  exploration_noise_num_steps: 50
+  use_mppi_mean: true
+  lr: 0.0001
+  actor_update_freq: 4
+  exploration_noise_end: 0.02
+  exploration_noise_num_steps: 150
   logging_freq: 25

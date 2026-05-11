@@ -978,13 +978,13 @@ class DCMPC(nn.Module):
             if self.cfg.num_pi_trajs > 0:
                 _z = z.expand(self.cfg.num_pi_trajs)
                 for t in range(self.cfg.plan_horizon - 1):
-                    pi_actions[t] = self.pi(_z["codes"], eval_mode=False)
+                    pi_actions[t] = self.pi(_z["codes"], eval_mode=eval_mode)
                     _z = self.model.trans(
                         _z["codes"],
                         pi_actions[t],
                         unc_prop_mode=self.cfg.plan_unc_prop_mode,
                     )
-                pi_actions[-1] = self.pi(_z["codes"], eval_mode=False)
+                pi_actions[-1] = self.pi(_z["codes"], eval_mode=eval_mode)
 
             # Initialize state and parameters
             z = z.expand(self.cfg.num_samples)
@@ -1134,8 +1134,8 @@ class DCMPC(nn.Module):
             {
                 "model": self.state_dict(),
                 "model_opt": self.model_opt.state_dict(),
-                "pi_opt": self.model_opt.state_dict(),
-                "q_opt": self.model_opt.state_dict(),
+                "pi_opt": self.pi_opt.state_dict(),
+                "q_opt": self.q_opt.state_dict(),
             }
         )
         torch.save(ckpt, path)

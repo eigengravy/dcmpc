@@ -44,6 +44,10 @@ class TrainConfig:
     device: str = "cuda"  # "cpu" or "cuda" etc
     env_device: str = "cpu"  # DMControl/MetaWorld on cpu but maniskill/isaac on cuda
     verbose: bool = False  # if true print training progress
+    log_best_checkpoint_eval: bool = True
+    restore_best_checkpoint_at_end: bool = False
+    early_stop_eval_success: Optional[float] = None
+    early_stop_eval_patience: int = 1
 
     scale_reward: bool = False  # it true scale rewards using symlog
 
@@ -64,6 +68,7 @@ class TrainConfig:
     wandb_silent: bool = True
     wandb_project_name: str = "DCWM"
     run_name: str = "dcmpc-${now:%Y-%m-%d_%H-%M-%S}"
+    experiment_tag: Optional[str] = None
 
     # Override the Hydra config to get better dir structure with W&B
     hydra: Any = field(

@@ -107,7 +107,14 @@ def train(cfg: TrainConfig):
     quantizer_type = cfg.agent.get("quantizer", "fsq") if hasattr(cfg.agent, "get") else getattr(cfg.agent, "quantizer", "fsq")
     consistency_loss = cfg.agent.get("consistency_loss", "cross-entropy") if hasattr(cfg.agent, "get") else getattr(cfg.agent, "consistency_loss", "cross-entropy")
     task_tag = f"{cfg.env_name}-{cfg.task_name}"
-    exp_name = f"{task_tag}-{quantizer_type}-{consistency_loss}-s{cfg.seed}"
+    protocol_tag = (
+        "stable"
+        if cfg.early_stop_eval_success is not None or cfg.restore_best_checkpoint_at_end
+        else "default"
+    )
+    if cfg.experiment_tag is not None:
+        protocol_tag = f"{protocol_tag}-{cfg.experiment_tag}"
+    exp_name = f"{task_tag}-{quantizer_type}-{consistency_loss}-{protocol_tag}-s{cfg.seed}"
     if cfg.use_wandb:
         writer = WandbLogger(
             exp_name=exp_name,
@@ -119,6 +126,7 @@ def train(cfg: TrainConfig):
                 f"quantizer={quantizer_type}",
                 f"consistency={consistency_loss}",
                 f"seed={str(cfg.seed)}",
+                f"protocol={protocol_tag}",
             ],
             save_code=True,
         )
@@ -192,7 +200,16 @@ def train(cfg: TrainConfig):
     policy_module = build_policy_module(eval_mode=False)
     eval_policy_module = build_policy_module(eval_mode=True)
 
-    def evaluate_and_log(best_episode_reward: float = 0.0):
+    def scalar_float(value):
+        if isinstance(value, torch.Tensor):
+            return float(value.detach().cpu().item())
+        return float(value)
+
+    def evaluate_and_log(
+        best_episode_reward: float = 0.0,
+        log_prefix: str = "eval/",
+        save_best: bool = True,
+    ):
         eval_metrics, eval_data = evaluate(
             env=eval_env,
             eval_policy_module=eval_policy_module,
@@ -223,11 +240,12 @@ def train(cfg: TrainConfig):
         eval_metrics.update(agent.metrics_from_observations(eval_observations))
 
         ##### Log metrics to W&B or csv #####
-        writer.log_scalar(name="eval/", value=eval_metrics)
+        writer.log_scalar(name=log_prefix, value=eval_metrics)
 
         ##### Save model checkpoint #####
-        if episode_reward > best_episode_reward:
-            best_episode_reward = episode_reward
+        eval_episode_reward = scalar_float(eval_metrics["episodic_return"])
+        if save_best and eval_episode_reward > best_episode_reward:
+            best_episode_reward = eval_episode_reward
             ckpt_metrics = {
                 "episodic_return": eval_metrics["episodic_return"],
                 "env_step": step * cfg.action_repeat,
@@ -241,6 +259,7 @@ def train(cfg: TrainConfig):
         return eval_metrics, best_episode_reward
 
     step, start_time, train_time = 0, time.time(), 0
+    early_stop_success_streak = 0
     for episode_idx in range(1, cfg.num_episodes + 1):
         episode_start_time = time.time()
         ##### Rollout the policy in the environment #####
@@ -305,7 +324,21 @@ def train(cfg: TrainConfig):
 
         ###### Evaluate ######
         if episode_idx % cfg.eval_every_episodes == 0:
-            _, best_episode_reward = evaluate_and_log(best_episode_reward)
+            eval_metrics, best_episode_reward = evaluate_and_log(best_episode_reward)
+            if cfg.early_stop_eval_success is not None:
+                eval_success = scalar_float(eval_metrics.get("episodic_success", 0.0))
+                if eval_success >= cfg.early_stop_eval_success:
+                    early_stop_success_streak += 1
+                else:
+                    early_stop_success_streak = 0
+                if early_stop_success_streak >= cfg.early_stop_eval_patience:
+                    logger.info(
+                        "Early stopping after %s eval(s) at success %.3f >= %.3f",
+                        early_stop_success_streak,
+                        eval_success,
+                        cfg.early_stop_eval_success,
+                    )
+                    break
 
         # Release some GPU memory (if possible)
         torch.cuda.empty_cache()
@@ -313,8 +346,19 @@ def train(cfg: TrainConfig):
     ##### Evaluate the final agent #####
     _ = evaluate_and_log(best_episode_reward)
 
+    ckpt_path = "./checkpoint.pt"
+    if cfg.log_best_checkpoint_eval and os.path.exists(ckpt_path):
+        final_state_dict = {k: v.detach().cpu().clone() for k, v in agent.state_dict().items()}
+        checkpoint = torch.load(ckpt_path, map_location=cfg.device, weights_only=True)
+        agent.load_state_dict(checkpoint["model"])
+        _ = evaluate_and_log(best_episode_reward, log_prefix="eval_best/", save_best=False)
+        if not cfg.restore_best_checkpoint_at_end:
+            agent.load_state_dict(final_state_dict)
+
     env.close()
     eval_env.close()
+    if cfg.use_wandb:
+        writer.experiment.finish()
 
 
 if __name__ == "__main__":
