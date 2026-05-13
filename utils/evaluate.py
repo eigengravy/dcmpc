@@ -21,6 +21,12 @@ INFO_METRIC_KEYS = (
     "distance_to_gate",
     "crossed_gate",
     "y_error_at_gate",
+    "gate_crossing_recorded",
+    "gate_crossing_y",
+    "gate_crossing_y_error",
+    "precision_success_0p02",
+    "precision_success_0p04",
+    "precision_success_0p08",
     "progress",
     "distance_to_button",
     "distance_to_handle",
@@ -35,7 +41,12 @@ def summarize_rollout_info(data, keys=INFO_METRIC_KEYS):
     if next_data is None:
         return metrics
 
-    for key in keys:
+    dynamic_keys = [
+        key
+        for key in next_data.keys()
+        if isinstance(key, str) and key.startswith("precision_success_")
+    ]
+    for key in tuple(keys) + tuple(k for k in dynamic_keys if k not in keys):
         value = next_data.get(key, None)
         if value is None or not torch.is_tensor(value):
             continue
@@ -62,6 +73,32 @@ def summarize_rollout_info(data, keys=INFO_METRIC_KEYS):
             final_value = value[-1]
         metrics[f"{safe_key}_final"] = final_value
 
+    return metrics
+
+
+def summarize_episode_binary_metrics(data):
+    """Aggregate episode-level binary success signals from rollout info."""
+    metrics = {}
+    next_data = data.get("next", None)
+    if next_data is None:
+        return metrics
+
+    keys = []
+    if next_data.get("success", None) is not None:
+        keys.append("success")
+    keys.extend(
+        key
+        for key in next_data.keys()
+        if isinstance(key, str) and key.startswith("precision_success_")
+    )
+
+    for key in keys:
+        value = next_data.get(key, None)
+        if value is None or not torch.is_tensor(value):
+            continue
+        safe_key = key.replace("/", "_")
+        metric_name = "episodic_success" if key == "success" else f"episodic_{safe_key}"
+        metrics[metric_name] = _episode_success(value)
     return metrics
 
 
@@ -130,9 +167,14 @@ def _final_episode_value(value):
 
 
 def _episode_success(success):
+    success = success.to(torch.bool)
+    while success.ndim > 0 and success.shape[-1] == 1:
+        success = success.squeeze(-1)
     if success.ndim >= 2:
         return success.any(dim=-1).to(torch.float).mean()
-    return success.any().to(torch.float)
+    if success.ndim == 1:
+        return success.any().to(torch.float)
+    return success.to(torch.float)
 
 
 def evaluate(
@@ -157,11 +199,8 @@ def evaluate(
         eval_episodic_return_std = (
             episode_returns.std() if episode_returns.numel() > 1 else torch.zeros(())
         )
-        success = eval_data["next"].get("success", None)
         episode_len = _final_episode_value(eval_data["next"]["step_count"])
-        if success is not None:
-            episodic_success = _episode_success(success)
-            eval_metrics.update({"episodic_success": episodic_success})
+        eval_metrics.update(summarize_episode_binary_metrics(eval_data))
         eval_metrics.update(summarize_rollout_info(eval_data))
         eval_metrics.update(summarize_continuous_control(eval_data))
 
@@ -169,6 +208,7 @@ def evaluate(
     eval_metrics.update(
         {
             "episodic_return": eval_episodic_return,
+            "normalized_return": eval_episodic_return / max_episode_steps,
             "episodic_return_std": eval_episodic_return_std,
             "episode_time": eval_episode_time,
             "episode_len": episode_len,

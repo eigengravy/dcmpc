@@ -25,6 +25,7 @@ import seaborn as sns
 DEFAULT_RATE = "rate/allocated_bits_per_transition"
 DEFAULT_RETURN = "episodic_return"
 DEFAULT_SUCCESS = "episodic_success"
+DEFAULT_PRECISION_SUCCESS = "episodic_precision_success_0p02"
 
 
 def _clean_columns(df: pd.DataFrame) -> pd.DataFrame:
@@ -60,7 +61,7 @@ def plot_pareto(df: pd.DataFrame, outdir: Path, y: str) -> None:
         alpha=0.45,
     )
     plt.xlabel("Allocated bits / transition")
-    plt.ylabel("Success rate" if y == DEFAULT_SUCCESS else "Episode return")
+    plt.ylabel("Success rate" if "success" in y else "Episode return")
     plt.tight_layout()
     plt.savefig(outdir / f"pareto_{y.replace('/', '_')}.png", dpi=300)
     plt.close()
@@ -84,7 +85,7 @@ def plot_rate_sensitivity(df: pd.DataFrame, outdir: Path, y: str) -> None:
     )
     plt.xscale("symlog", linthresh=1e-6)
     plt.xlabel("DDCL rate penalty")
-    plt.ylabel("Success rate" if y == DEFAULT_SUCCESS else "Episode return")
+    plt.ylabel("Success rate" if "success" in y else "Episode return")
     plt.tight_layout()
     plt.savefig(outdir / f"lambda_sensitivity_{y.replace('/', '_')}.png", dpi=300)
     plt.close()
@@ -148,7 +149,7 @@ def main() -> None:
     parser.add_argument("--outdir", type=Path, default=Path("paper_metric_plots"))
     parser.add_argument(
         "--score",
-        choices=(DEFAULT_RETURN, DEFAULT_SUCCESS),
+        choices=(DEFAULT_RETURN, DEFAULT_SUCCESS, DEFAULT_PRECISION_SUCCESS),
         default=DEFAULT_RETURN,
         help="Primary y-axis score for Pareto and sensitivity plots.",
     )

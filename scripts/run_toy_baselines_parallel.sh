@@ -42,7 +42,15 @@ launch_job() {
   echo "Launching toy baseline: env=${ENV_NAME} agent=${agent} seed=${seed} project=${WANDB_PROJECT_NAME} log=${log_file}"
   mkdir -p "${hydra_dir}"
   (
-    nice -n "${NICE_LEVEL}" "${PYTHON_BIN}" train.py \
+    if [[ "${NICE_LEVEL}" == "0" ]]; then
+      runner=("${PYTHON_BIN}")
+    elif nice -n "${NICE_LEVEL}" true >/dev/null 2>&1; then
+      runner=(nice -n "${NICE_LEVEL}" "${PYTHON_BIN}")
+    else
+      echo "Warning: nice level ${NICE_LEVEL} is not permitted; running without nice."
+      runner=("${PYTHON_BIN}")
+    fi
+    "${runner[@]}" train.py \
       env="${ENV_NAME}" \
       agent="${agent}" \
       seed="${seed}" \

@@ -14,6 +14,8 @@ RUN_ROOT="${RUN_ROOT:-output/metaworld_runs/${ENV_NAME}_ddcl_sensitivity_$(date 
 EXPERIMENT_TAG="${EXPERIMENT_TAG:-metaworld-ddcl-sensitivity-v1}"
 NUM_EVAL_EPISODES="${NUM_EVAL_EPISODES:-20}"
 RESTORE_BEST_CHECKPOINT="${RESTORE_BEST_CHECKPOINT:-true}"
+BEST_CHECKPOINT_METRIC="${BEST_CHECKPOINT_METRIC:-episodic_success}"
+BEST_CHECKPOINT_TIEBREAKER_METRIC="${BEST_CHECKPOINT_TIEBREAKER_METRIC:-episodic_return}"
 NICE_LEVEL="${NICE_LEVEL:-0}"
 MANIFEST="${RUN_ROOT}/manifest.txt"
 
@@ -71,6 +73,8 @@ launch_job() {
       experiment_tag="${EXPERIMENT_TAG}-lambda${safe_lambda}-delta${safe_delta}" \
       num_eval_episodes="${NUM_EVAL_EPISODES}" \
       restore_best_checkpoint_at_end="${RESTORE_BEST_CHECKPOINT}" \
+      best_checkpoint_metric="${BEST_CHECKPOINT_METRIC}" \
+      best_checkpoint_tiebreaker_metric="${BEST_CHECKPOINT_TIEBREAKER_METRIC}" \
       log_best_checkpoint_eval=true \
       agent.ddcl_lambda="${lambda}" \
       agent.ddcl_delta="${delta}" \
@@ -87,6 +91,7 @@ echo "  seeds=${SEEDS}"
 echo "  max_parallel=${MAX_PARALLEL}"
 echo "  run_root=${RUN_ROOT}"
 echo "  experiment_tag=${EXPERIMENT_TAG}"
+echo "  best_checkpoint_metric=${BEST_CHECKPOINT_METRIC}"
 
 {
   echo "started_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -103,6 +108,8 @@ echo "  experiment_tag=${EXPERIMENT_TAG}"
   echo "experiment_tag=${EXPERIMENT_TAG}"
   echo "num_eval_episodes=${NUM_EVAL_EPISODES}"
   echo "restore_best_checkpoint_at_end=${RESTORE_BEST_CHECKPOINT}"
+  echo "best_checkpoint_metric=${BEST_CHECKPOINT_METRIC}"
+  echo "best_checkpoint_tiebreaker_metric=${BEST_CHECKPOINT_TIEBREAKER_METRIC}"
   echo "thread_limits=OMP:${OMP_NUM_THREADS} MKL:${MKL_NUM_THREADS} VECLIB:${VECLIB_MAXIMUM_THREADS} NUMEXPR:${NUMEXPR_NUM_THREADS}"
   echo "git_head=$(git rev-parse --short HEAD 2>/dev/null || echo unavailable)"
   echo "git_status_start"

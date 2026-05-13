@@ -86,6 +86,7 @@ def train(cfg: TrainConfig):
         evaluate,
         ReplayBuffer,
         summarize_continuous_control,
+        summarize_episode_binary_metrics,
         summarize_rollout_info,
     )
 
@@ -205,8 +206,17 @@ def train(cfg: TrainConfig):
             return float(value.detach().cpu().item())
         return float(value)
 
+    def metric_score(eval_metrics):
+        primary = scalar_float(eval_metrics.get(cfg.best_checkpoint_metric, float("-inf")))
+        if cfg.best_checkpoint_tiebreaker_metric is None:
+            return (primary,)
+        tiebreaker = scalar_float(
+            eval_metrics.get(cfg.best_checkpoint_tiebreaker_metric, float("-inf"))
+        )
+        return (primary, tiebreaker)
+
     def evaluate_and_log(
-        best_episode_reward: float = 0.0,
+        best_checkpoint_score=None,
         log_prefix: str = "eval/",
         save_best: bool = True,
     ):
@@ -243,22 +253,32 @@ def train(cfg: TrainConfig):
         writer.log_scalar(name=log_prefix, value=eval_metrics)
 
         ##### Save model checkpoint #####
-        eval_episode_reward = scalar_float(eval_metrics["episodic_return"])
-        if save_best and eval_episode_reward > best_episode_reward:
-            best_episode_reward = eval_episode_reward
+        eval_checkpoint_score = metric_score(eval_metrics)
+        if save_best and (
+            best_checkpoint_score is None or eval_checkpoint_score > best_checkpoint_score
+        ):
+            best_checkpoint_score = eval_checkpoint_score
             ckpt_metrics = {
                 "episodic_return": eval_metrics["episodic_return"],
+                "checkpoint_metric": cfg.best_checkpoint_metric,
+                "checkpoint_score": eval_checkpoint_score[0],
                 "env_step": step * cfg.action_repeat,
                 "step": step,
                 "episode": episode_idx,
             }
+            if cfg.best_checkpoint_tiebreaker_metric is not None:
+                ckpt_metrics["checkpoint_tiebreaker_metric"] = (
+                    cfg.best_checkpoint_tiebreaker_metric
+                )
+                ckpt_metrics["checkpoint_tiebreaker_score"] = eval_checkpoint_score[1]
             ckpt_path = "./checkpoint.pt"
             agent.save(path=ckpt_path, metrics=ckpt_metrics)
             writer.experiment.save(ckpt_path, policy="now")
 
-        return eval_metrics, best_episode_reward
+        return eval_metrics, best_checkpoint_score
 
     step, start_time, train_time = 0, time.time(), 0
+    best_checkpoint_score = None
     early_stop_success_streak = 0
     for episode_idx in range(1, cfg.num_episodes + 1):
         episode_start_time = time.time()
@@ -282,22 +302,18 @@ def train(cfg: TrainConfig):
             print(colored("First episodes data:", "green", attrs=["bold"]), data)
 
             # Evaluate the initial agent
-            _, best_episode_reward = evaluate_and_log(best_episode_reward=0)
+            _, best_checkpoint_score = evaluate_and_log(best_checkpoint_score)
 
         ##### Log episode metrics #####
         episode_len = data["next"]["step_count"][-1].cpu().item()
         step += episode_len
         rollout_metrics = {
             "episodic_return": episode_reward,
+            "normalized_return": episode_reward / cfg.max_episode_steps,
             "episodic_length": episode_len,
             "env_step": step * cfg.action_repeat,
         }
-        success = data["next"].get("success", None)
-        if success is not None:
-            episode_success = success.any()
-            if isinstance(episode_success, torch.Tensor):
-                episode_success = episode_success.item()
-            rollout_metrics.update({"episodic_success": int(episode_success)})
+        rollout_metrics.update(summarize_episode_binary_metrics(data))
         rollout_metrics.update(summarize_rollout_info(data))
         rollout_metrics.update(summarize_continuous_control(data))
 
@@ -324,7 +340,7 @@ def train(cfg: TrainConfig):
 
         ###### Evaluate ######
         if episode_idx % cfg.eval_every_episodes == 0:
-            eval_metrics, best_episode_reward = evaluate_and_log(best_episode_reward)
+            eval_metrics, best_checkpoint_score = evaluate_and_log(best_checkpoint_score)
             if cfg.early_stop_eval_success is not None:
                 eval_success = scalar_float(eval_metrics.get("episodic_success", 0.0))
                 if eval_success >= cfg.early_stop_eval_success:
@@ -344,14 +360,14 @@ def train(cfg: TrainConfig):
         torch.cuda.empty_cache()
 
     ##### Evaluate the final agent #####
-    _ = evaluate_and_log(best_episode_reward)
+    _ = evaluate_and_log(best_checkpoint_score)
 
     ckpt_path = "./checkpoint.pt"
     if cfg.log_best_checkpoint_eval and os.path.exists(ckpt_path):
         final_state_dict = {k: v.detach().cpu().clone() for k, v in agent.state_dict().items()}
         checkpoint = torch.load(ckpt_path, map_location=cfg.device, weights_only=True)
         agent.load_state_dict(checkpoint["model"])
-        _ = evaluate_and_log(best_episode_reward, log_prefix="eval_best/", save_best=False)
+        _ = evaluate_and_log(best_checkpoint_score, log_prefix="eval_best/", save_best=False)
         if not cfg.restore_best_checkpoint_at_end:
             agent.load_state_dict(final_state_dict)
 

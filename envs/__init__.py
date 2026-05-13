@@ -168,6 +168,9 @@ def make_env_fn(cfg, record_video: bool = False):
             goal_threshold=cfg.get("toy_goal_threshold", 0.08),
             spawn_y_noise=cfg.get("toy_spawn_y_noise", 0.35),
             collision_terminates=cfg.get("toy_collision_terminates", True),
+            precision_success_deltas=cfg.get(
+                "toy_precision_success_deltas", [0.02, 0.04, 0.08]
+            ),
         )
     elif cfg.env_name.startswith("mw-"):
         metaworld_registry, metaworld_make_env = _get_metaworld()

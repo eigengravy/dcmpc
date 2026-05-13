@@ -10,6 +10,8 @@ WANDB_PROJECT_NAME="${WANDB_PROJECT_NAME:-ddcl_mbrl_metaworld}"
 EXPERIMENT_TAG="${EXPERIMENT_TAG:-metaworld-paper-v1}"
 NUM_EVAL_EPISODES="${NUM_EVAL_EPISODES:-20}"
 RESTORE_BEST_CHECKPOINT="${RESTORE_BEST_CHECKPOINT:-true}"
+BEST_CHECKPOINT_METRIC="${BEST_CHECKPOINT_METRIC:-episodic_success}"
+BEST_CHECKPOINT_TIEBREAKER_METRIC="${BEST_CHECKPOINT_TIEBREAKER_METRIC:-episodic_return}"
 RUN_ID="${RUN_ID:-$(date +%Y%m%d_%H%M%S)}"
 SWEEP_DIR="${SWEEP_DIR:-output/metaworld_runs/${ENV_NAME}_baselines_${RUN_ID}/hydra}"
 TIMEOUT_MIN="${TIMEOUT_MIN:-1440}"
@@ -35,6 +37,8 @@ python train.py --multirun \
   "experiment_tag=${EXPERIMENT_TAG}" \
   "num_eval_episodes=${NUM_EVAL_EPISODES}" \
   "restore_best_checkpoint_at_end=${RESTORE_BEST_CHECKPOINT}" \
+  "best_checkpoint_metric=${BEST_CHECKPOINT_METRIC}" \
+  "best_checkpoint_tiebreaker_metric=${BEST_CHECKPOINT_TIEBREAKER_METRIC}" \
   "log_best_checkpoint_eval=true" \
   "hydra.sweep.dir=${SWEEP_DIR}" \
   "hydra.sweep.subdir=\${hydra.job.num}" \

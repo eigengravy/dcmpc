@@ -2,14 +2,36 @@ __pycache__
 *.pyc
 .DS_Store
 
+# Local secrets and machine-specific environment.
+.env
+.env.*
+!.env.example
+.venv/
+venv/
+.python_history
+
 # Local/private research planning and experiment bookkeeping.
 # These files are intentionally kept out of GitHub because they may contain
 # speculative paper strategy, failed runs, cluster paths, W&B links, and notes.
 private/
 research_notes/
+reports/
 
 # Local outputs and caches.
 output/
 outputs/
+multirun/
 wandb/
 paper_metric_plots/
+.hydra/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Training artifacts and terminal logs.
+checkpoint.pt
+*.ckpt
+*.pth
+*.pt
+*.log
+screenlog.*

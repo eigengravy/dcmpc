@@ -2,13 +2,15 @@
 from typing import Optional
 
 from dm_control import suite
-from envs.tasks import ball_in_cup, pendulum
+from envs.tasks import ball_in_cup, pendulum  # noqa: F401
 from torchrl.envs import DMControlEnv, DMControlWrapper, TransformedEnv
 from torchrl.envs.transforms import CatTensors, TransformedEnv
 
 
-suite.ALL_TASKS = suite.ALL_TASKS + suite._get_tasks("custom")
-suite.TASKS_BY_DOMAIN = suite._get_tasks_by_domain(suite.ALL_TASKS)
+if not getattr(suite, "_dcmpc_custom_tasks_registered", False):
+    suite.ALL_TASKS = suite.ALL_TASKS + suite._get_tasks("custom")
+    suite.TASKS_BY_DOMAIN = suite._get_tasks_by_domain(suite.ALL_TASKS)
+    suite._dcmpc_custom_tasks_registered = True
 
 
 def make_env(

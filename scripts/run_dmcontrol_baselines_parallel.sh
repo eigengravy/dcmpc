@@ -1,20 +1,21 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ENV_NAME="${ENV_NAME:-mw-button-press}"
+# Format: env_config:num_episodes:eval_every_episodes
+# With max_episode_steps=1000 and action_repeat=2, one episode is 1000 env steps.
+TASK_SPECS="${TASK_SPECS:-walker-walk:200:10 dog-run:1000:50 humanoid-walk:1000:50 reacher-easy:1000:50}"
 SEEDS="${SEEDS:-0 1 2 3 4}"
 AGENTS="${AGENTS:-ddcl_ce dcmpc vq_ce continuous_mse}"
 DEVICE="${DEVICE:-cuda}"
 USE_WANDB="${USE_WANDB:-true}"
-WANDB_PROJECT_NAME="${WANDB_PROJECT_NAME:-ddcl_mbrl_metaworld}"
+WANDB_PROJECT_NAME="${WANDB_PROJECT_NAME:-ddcl_mbrl_dmcontrol}"
 PYTHON_BIN="${PYTHON_BIN:-python}"
-MAX_PARALLEL="${MAX_PARALLEL:-1}"
-RUN_ROOT="${RUN_ROOT:-output/metaworld_runs/${ENV_NAME}_baselines_$(date +%Y%m%d_%H%M%S)}"
-EXPERIMENT_TAG="${EXPERIMENT_TAG:-metaworld-paper-v1}"
-NUM_EVAL_EPISODES="${NUM_EVAL_EPISODES:-20}"
+MAX_PARALLEL="${MAX_PARALLEL:-4}"
+RUN_ROOT="${RUN_ROOT:-output/dmcontrol_runs/baselines_$(date +%Y%m%d_%H%M%S)}"
+EXPERIMENT_TAG="${EXPERIMENT_TAG:-dmcontrol-paper-v1}"
+NUM_EVAL_EPISODES="${NUM_EVAL_EPISODES:-10}"
 RESTORE_BEST_CHECKPOINT="${RESTORE_BEST_CHECKPOINT:-true}"
-BEST_CHECKPOINT_METRIC="${BEST_CHECKPOINT_METRIC:-episodic_success}"
-BEST_CHECKPOINT_TIEBREAKER_METRIC="${BEST_CHECKPOINT_TIEBREAKER_METRIC:-episodic_return}"
+BEST_CHECKPOINT_METRIC="${BEST_CHECKPOINT_METRIC:-episodic_return}"
 NICE_LEVEL="${NICE_LEVEL:-0}"
 MANIFEST="${RUN_ROOT}/manifest.txt"
 
@@ -40,46 +41,59 @@ wait_for_slot() {
 }
 
 launch_job() {
-  local agent="$1"
-  local seed="$2"
-  local log_file="${RUN_ROOT}/logs/${ENV_NAME}--${agent}--s${seed}.log"
-  local hydra_dir="${RUN_ROOT}/hydra/${ENV_NAME}--${agent}--s${seed}"
+  local env_name="$1"
+  local num_episodes="$2"
+  local eval_every="$3"
+  local agent="$4"
+  local seed="$5"
+  local run_id="${env_name}--${agent}--s${seed}"
+  local log_file="${RUN_ROOT}/logs/${run_id}.log"
+  local hydra_dir="${RUN_ROOT}/hydra/${run_id}"
 
-  echo "Launching Meta-World baseline: env=${ENV_NAME} agent=${agent} seed=${seed} project=${WANDB_PROJECT_NAME} log=${log_file}"
+  echo "Launching DMControl baseline: env=${env_name} episodes=${num_episodes} eval_every=${eval_every} agent=${agent} seed=${seed} log=${log_file}"
   mkdir -p "${hydra_dir}"
   (
-    nice -n "${NICE_LEVEL}" "${PYTHON_BIN}" train.py \
-      env="${ENV_NAME}" \
+    if [[ "${NICE_LEVEL}" == "0" ]]; then
+      runner=("${PYTHON_BIN}")
+    elif nice -n "${NICE_LEVEL}" true >/dev/null 2>&1; then
+      runner=(nice -n "${NICE_LEVEL}" "${PYTHON_BIN}")
+    else
+      echo "Warning: nice level ${NICE_LEVEL} is not permitted; running without nice."
+      runner=("${PYTHON_BIN}")
+    fi
+    "${runner[@]}" train.py \
+      env="${env_name}" \
       agent="${agent}" \
       seed="${seed}" \
       device="${DEVICE}" \
       use_wandb="${USE_WANDB}" \
       wandb_project_name="${WANDB_PROJECT_NAME}" \
       experiment_tag="${EXPERIMENT_TAG}" \
+      num_episodes="${num_episodes}" \
+      eval_every_episodes="${eval_every}" \
       num_eval_episodes="${NUM_EVAL_EPISODES}" \
       restore_best_checkpoint_at_end="${RESTORE_BEST_CHECKPOINT}" \
       best_checkpoint_metric="${BEST_CHECKPOINT_METRIC}" \
-      best_checkpoint_tiebreaker_metric="${BEST_CHECKPOINT_TIEBREAKER_METRIC}" \
+      best_checkpoint_tiebreaker_metric=null \
       log_best_checkpoint_eval=true \
       hydra.run.dir="${hydra_dir}"
   ) >"${log_file}" 2>&1 &
   pids+=("$!")
 }
 
-echo "Meta-World baseline run"
-echo "  env=${ENV_NAME}"
+echo "DMControl baseline run"
+echo "  task_specs=${TASK_SPECS}"
 echo "  agents=${AGENTS}"
 echo "  seeds=${SEEDS}"
 echo "  max_parallel=${MAX_PARALLEL}"
 echo "  run_root=${RUN_ROOT}"
-echo "  experiment_tag=${EXPERIMENT_TAG}"
-echo "  num_eval_episodes=${NUM_EVAL_EPISODES}"
+echo "  wandb_project=${WANDB_PROJECT_NAME}"
 echo "  best_checkpoint_metric=${BEST_CHECKPOINT_METRIC}"
 
 {
   echo "started_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   echo "cwd=$(pwd)"
-  echo "env=${ENV_NAME}"
+  echo "task_specs=${TASK_SPECS}"
   echo "agents=${AGENTS}"
   echo "seeds=${SEEDS}"
   echo "max_parallel=${MAX_PARALLEL}"
@@ -91,7 +105,6 @@ echo "  best_checkpoint_metric=${BEST_CHECKPOINT_METRIC}"
   echo "num_eval_episodes=${NUM_EVAL_EPISODES}"
   echo "restore_best_checkpoint_at_end=${RESTORE_BEST_CHECKPOINT}"
   echo "best_checkpoint_metric=${BEST_CHECKPOINT_METRIC}"
-  echo "best_checkpoint_tiebreaker_metric=${BEST_CHECKPOINT_TIEBREAKER_METRIC}"
   echo "thread_limits=OMP:${OMP_NUM_THREADS} MKL:${MKL_NUM_THREADS} VECLIB:${VECLIB_MAXIMUM_THREADS} NUMEXPR:${NUMEXPR_NUM_THREADS}"
   echo "git_head=$(git rev-parse --short HEAD 2>/dev/null || echo unavailable)"
   echo "git_status_start"
@@ -99,10 +112,17 @@ echo "  best_checkpoint_metric=${BEST_CHECKPOINT_METRIC}"
   echo "git_status_end"
 } >"${MANIFEST}"
 
-for agent in ${AGENTS}; do
-  for seed in ${SEEDS}; do
-    wait_for_slot
-    launch_job "${agent}" "${seed}"
+for spec in ${TASK_SPECS}; do
+  IFS=":" read -r env_name num_episodes eval_every <<<"${spec}"
+  if [[ -z "${env_name}" || -z "${num_episodes}" || -z "${eval_every}" ]]; then
+    echo "Invalid TASK_SPECS entry: ${spec}. Expected env:num_episodes:eval_every_episodes" >&2
+    exit 2
+  fi
+  for agent in ${AGENTS}; do
+    for seed in ${SEEDS}; do
+      wait_for_slot
+      launch_job "${env_name}" "${num_episodes}" "${eval_every}" "${agent}" "${seed}"
+    done
   done
 done
 
@@ -118,4 +138,4 @@ if (( failed_jobs > 0 )); then
   exit 1
 fi
 
-echo "Completed all Meta-World baselines. Logs: ${RUN_ROOT}/logs"
+echo "Completed all DMControl baselines. Logs: ${RUN_ROOT}/logs"

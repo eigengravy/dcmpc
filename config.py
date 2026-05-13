@@ -46,6 +46,8 @@ class TrainConfig:
     verbose: bool = False  # if true print training progress
     log_best_checkpoint_eval: bool = True
     restore_best_checkpoint_at_end: bool = False
+    best_checkpoint_metric: str = "episodic_return"
+    best_checkpoint_tiebreaker_metric: Optional[str] = None
     early_stop_eval_success: Optional[float] = None
     early_stop_eval_patience: int = 1
 
@@ -57,6 +59,9 @@ class TrainConfig:
     toy_goal_threshold: float = 0.08
     toy_spawn_y_noise: float = 0.35
     toy_collision_terminates: bool = True
+    toy_precision_success_deltas: List[float] = field(
+        default_factory=lambda: [0.02, 0.04, 0.08]
+    )
 
     # Evaluation
     eval_every_episodes: int = 25  # every 25k env steps
@@ -173,6 +178,8 @@ class DDCLCEConfig(DCMPCConfig):
 
     quantizer: str = "ddcl"
     consistency_loss: str = "cross-entropy"
+    ddcl_deterministic_eval: bool = True
+    ddcl_deterministic_targets: bool = True
 
 
 @dataclass
@@ -181,6 +188,8 @@ class DDCLMSEConfig(DCMPCConfig):
 
     quantizer: str = "ddcl"
     consistency_loss: str = "mse"
+    ddcl_deterministic_eval: bool = True
+    ddcl_deterministic_targets: bool = True
 
 
 cs.store(name="ddcl_ce", group="agent", node=DDCLCEConfig)

@@ -122,13 +122,16 @@ class DDCLQuantizer(nn.Module):
     def implicit_codebook(self) -> torch.Tensor:
         return self._implicit_codebook
 
-    def forward(self, z):
+    def forward(self, z, stochastic: bool = True):
         shp = z.shape
         z = z.view(*shp[:-1], -1, self.num_channels)
 
         z_bounded = self.scale * torch.tanh(z)
 
-        epsilon = (torch.rand_like(z_bounded) - 0.5) * self.delta
+        if stochastic:
+            epsilon = (torch.rand_like(z_bounded) - 0.5) * self.delta
+        else:
+            epsilon = torch.zeros_like(z_bounded)
         z_prime = z_bounded + epsilon
         m = torch.floor(z_prime / self.delta)
         c_m = self.delta * (m + 0.5)

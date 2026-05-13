@@ -87,6 +87,10 @@ class DCMPCConfig:
     ddcl_scale: float = 3.5
     """DDCL communication cost weight"""
     ddcl_lambda: float = 1e-3
+    """Use deterministic DDCL quantization when selecting/evaluating actions"""
+    ddcl_deterministic_eval: bool = False
+    """Use deterministic DDCL labels for next-observation CE/MSE targets"""
+    ddcl_deterministic_targets: bool = False
     """(Optionally) use automatic mixed precision"""
     use_amp: bool = False
     """Use straight through Gumbel softmax (hard) or just Gumbel softmax (soft)"""
@@ -263,7 +267,9 @@ class WorldModel(nn.Module):
             else:
                 self.r_scale_fn = lambda r: r
 
-    def encode(self, obs):
+    def encode(self, obs, stochastic: Optional[bool] = None):
+        if stochastic is None:
+            stochastic = self.training
         zs = {}
         for key in obs.keys():
             zs.update({key: self._encoder[key](obs[key])})
@@ -276,7 +282,7 @@ class WorldModel(nn.Module):
 
         td = TensorDict({"state": z}, batch_size=obs.batch_size)
         if self._uses_discrete:
-            q_out = self.quantize(z)
+            q_out = self.quantize(z, stochastic=stochastic)
             # Scalar losses can't be stored in a batched TensorDict,
             # so stash them as plain attributes instead.
             comm_loss = q_out.pop("comm_loss", None)
@@ -290,7 +296,15 @@ class WorldModel(nn.Module):
             td.update({"codes": z})
         return td
 
-    def trans(self, z, a, unc_prop_mode: Optional[str] = None):
+    def trans(
+        self,
+        z,
+        a,
+        unc_prop_mode: Optional[str] = None,
+        stochastic: Optional[bool] = None,
+    ):
+        if stochastic is None:
+            stochastic = self.training
         za = torch.concat([z, a], -1)
 
         if (
@@ -349,7 +363,7 @@ class WorldModel(nn.Module):
             delta_z = self._trans(za)
             next_z = z + delta_z if self.cfg.use_delta else delta_z
             if self._uses_discrete:
-                next_z = self.quantize(next_z)["codes"]
+                next_z = self.quantize(next_z, stochastic=stochastic)["codes"]
 
             next_z_dict = {"codes": next_z}
 
@@ -370,9 +384,14 @@ class WorldModel(nn.Module):
         r = self.r_scale_fn(r)
         return r
 
-    def quantize(self, z):
+    def quantize(self, z, stochastic: Optional[bool] = None):
         """Quantize the latent state using the configured quantizer"""
-        td = self._quantizer(z)
+        if stochastic is None:
+            stochastic = self.training
+        if isinstance(self._quantizer, DDCLQuantizer):
+            td = self._quantizer(z, stochastic=stochastic)
+        else:
+            td = self._quantizer(z)
         td["state"] = td["codes"]
         return td
 
@@ -386,7 +405,10 @@ class WorldModel(nn.Module):
         ##### Create targets #####
         with torch.no_grad():
             next_obs = batch.next_observations
-            zs_tar = self.encode(next_obs)
+            zs_tar = self.encode(
+                next_obs,
+                stochastic=not self.cfg.ddcl_deterministic_targets,
+            )
 
         ##### Create TensorDicts to fill #####
         zs = {
@@ -416,7 +438,7 @@ class WorldModel(nn.Module):
         )
 
         ##### Latent rollout #####
-        z_encoded = self.encode(batch.observations[0])
+        z_encoded = self.encode(batch.observations[0], stochastic=True)
         z = z_encoded["codes"]
         zs["codes"][0] = z
 
@@ -436,7 +458,7 @@ class WorldModel(nn.Module):
                 terminateds_or_dones[t], torch.logical_or(dones, batch.terminateds[t])
             )
 
-            next_z = self.trans(z=z, a=a[t])
+            next_z = self.trans(z=z, a=a[t], stochastic=True)
             zs[t + 1] = next_z
             z = next_z["codes"]
 
@@ -528,7 +550,7 @@ class WorldModel(nn.Module):
 
     @torch.no_grad()
     def metrics_from_observations(self, observations):
-        z = self.encode(observations)
+        z = self.encode(observations, stochastic=False)
 
         metrics = h.calc_rank(name="z", z=z["state"])
         metrics.update(
@@ -934,7 +956,10 @@ class DCMPC(nn.Module):
             obs = obs.view(1)
             is_flat_obs = True
 
-        z = self.model.encode(obs).to(torch.float)
+        encode_stochastic = not (
+            eval_mode and self.cfg.ddcl_deterministic_eval
+        )
+        z = self.model.encode(obs, stochastic=encode_stochastic).to(torch.float)
         if self.cfg.mpc:
             a, self.mppi_std = self.plan(z, t0=t0, eval_mode=eval_mode)
             a = a[0] if is_flat_obs else a
@@ -983,6 +1008,9 @@ class DCMPC(nn.Module):
                         _z["codes"],
                         pi_actions[t],
                         unc_prop_mode=self.cfg.plan_unc_prop_mode,
+                        stochastic=not (
+                            eval_mode and self.cfg.ddcl_deterministic_eval
+                        ),
                     )
                 pi_actions[-1] = self.pi(_z["codes"], eval_mode=eval_mode)
 
@@ -1009,7 +1037,9 @@ class DCMPC(nn.Module):
                 ).clamp(-1, 1)
 
                 # Compute elite actions
-                value = self._single_estimate_value(z, actions).nan_to_num_(0)
+                value = self._single_estimate_value(
+                    z, actions, eval_mode=eval_mode
+                ).nan_to_num_(0)
                 if self.cfg.use_top_k:
                     elite_idxs = torch.topk(
                         value.squeeze(1), self.cfg.num_elites, dim=0
@@ -1067,13 +1097,18 @@ class DCMPC(nn.Module):
         return a, std
 
     @torch.no_grad()
-    def _single_estimate_value(self, z, actions):
+    def _single_estimate_value(self, z, actions, eval_mode: bool = False):
         """Estimate value of a trajectory starting at latent state z and executing given actions."""
         G, discount = 0, 1
         for t in range(self.cfg.plan_horizon):
             reward = self.model.reward(z["codes"], actions[t])
             z = self.model.trans(
-                z["codes"], actions[t], unc_prop_mode=self.cfg.plan_unc_prop_mode
+                z["codes"],
+                actions[t],
+                unc_prop_mode=self.cfg.plan_unc_prop_mode,
+                stochastic=not (
+                    eval_mode and self.cfg.ddcl_deterministic_eval
+                ),
             )
             G += discount * reward
             discount *= self.cfg.rho

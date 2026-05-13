@@ -1,0 +1,19 @@
+# @package _global_
+defaults:
+  - toy-precision-gate
+  - _self_
+
+experiment_tag: "final-v1"
+num_eval_episodes: 50
+early_stop_eval_success: 0.95
+early_stop_eval_patience: 1
+restore_best_checkpoint_at_end: true
+best_checkpoint_metric: "episodic_success"
+best_checkpoint_tiebreaker_metric: "episodic_return"
+toy_precision_success_deltas: [0.02, 0.04, 0.08]
+
+agent:
+  lr: 0.00005
+  actor_update_freq: 8
+  exploration_noise_end: 0.01
+  exploration_noise_num_steps: 250
