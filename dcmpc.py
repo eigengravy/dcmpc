@@ -650,34 +650,41 @@ class WorldModel(nn.Module):
         if indices.ndim == 1:
             indices = indices.unsqueeze(-1)
 
-        flat_tokens = indices.reshape(-1).to(torch.long)
         total_codes = int(self._quantizer.codebook_size)
-        unique_count = flat_tokens.unique().numel()
-        usage_percent = unique_count / total_codes * 100
 
+        flat_tokens = indices.reshape(-1).to(torch.long)
+        per_group_unique = torch.empty(
+            indices.shape[-1], device=indices.device, dtype=torch.float32
+        )
         per_group_usage = torch.empty(
             indices.shape[-1], device=indices.device, dtype=torch.float32
         )
         per_group_entropy = torch.empty_like(per_group_usage)
         for group_idx in range(indices.shape[-1]):
             group_tokens = indices[:, group_idx]
-            per_group_usage[group_idx] = (
-                group_tokens.unique().numel() / total_codes * 100
+            per_group_unique[group_idx] = group_tokens.unique().numel()
+            per_group_usage[group_idx] = per_group_unique[group_idx] / total_codes * 100
+            counts = torch.bincount(
+                group_tokens.reshape(-1).to(torch.long), minlength=total_codes
             )
-            counts = torch.bincount(group_tokens.reshape(-1).to(torch.long), minlength=total_codes)
             probs = counts.float() / counts.sum().clamp_min(1)
             probs = probs[probs > 0]
             entropy = -(probs * probs.log2()).sum()
             per_group_entropy[group_idx] = entropy / math.log2(total_codes)
 
+        active_percent = per_group_usage.mean().item()
         metrics = {
-            "active_percent_avg": per_group_usage.mean().item(),
+            "active_percent": active_percent,
+            "active_percent_avg": active_percent,
             "active_percent_min": per_group_usage.min().item(),
             "active_percent_max": per_group_usage.max().item(),
-            "codebook/unique_codes": unique_count,
+            "codebook/unique_codes": per_group_unique.mean().item(),
             "codebook/total_codes": total_codes,
-            "codebook/usage_percent": usage_percent,
-            "codebook/per_group_usage_mean": per_group_usage.mean().item(),
+            "codebook/usage_percent": active_percent,
+            "codebook/per_group_unique_mean": per_group_unique.mean().item(),
+            "codebook/per_group_unique_min": per_group_unique.min().item(),
+            "codebook/per_group_unique_max": per_group_unique.max().item(),
+            "codebook/per_group_usage_mean": active_percent,
             "codebook/per_group_usage_min": per_group_usage.min().item(),
             "codebook/per_group_usage_max": per_group_usage.max().item(),
             "codebook/per_group_entropy_mean": per_group_entropy.mean().item(),
