@@ -10,6 +10,13 @@ def _agent_spec(spec, env):
     return spec
 
 
+def _flat_observations(data):
+    observations = data["observation"]
+    if len(observations.batch_size) > 1:
+        return observations.flatten()
+    return observations
+
+
 class _NoOpExperiment:
     def save(self, *args, **kwargs):
         return None
@@ -108,13 +115,15 @@ def eval_checkpoint(cfg: EvalConfig):
 
     # train_cfg.update(max_episode_steps=250)
     # train_cfg.agent.update(mpc=False)
-    video_env = make_env(
-        train_cfg,
-        num_envs=1,
-        record_video=cfg.capture_eval_video,
-        tag="eval",
-        logger=writer,
-    )
+    video_env = None
+    if cfg.capture_eval_video:
+        video_env = make_env(
+            train_cfg,
+            num_envs=1,
+            record_video=True,
+            tag="eval",
+            logger=writer,
+        )
 
     ###### Init agent ######
     agent = DCMPC(
@@ -134,7 +143,7 @@ def eval_checkpoint(cfg: EvalConfig):
         logger.info(f"Loaded checkpoint from {cfg.checkpoint}")
 
     ##### Evaluate the agent #####
-    eval_metrics = evaluate(
+    eval_metrics, eval_data = evaluate(
         env=eval_env,
         eval_policy_module=TensorDictModule(
             lambda obs, step_count: agent.select_action(
@@ -146,7 +155,10 @@ def eval_checkpoint(cfg: EvalConfig):
         max_episode_steps=train_cfg.max_episode_steps,
         action_repeat=train_cfg.action_repeat,
         video_env=video_env,
+        return_rollout=True,
     )
+    eval_observations = _flat_observations(eval_data)
+    eval_metrics.update(agent.metrics_from_observations(eval_observations))
 
     ##### Log metrics to W&B or csv #####
     writer.log_scalar(name="eval/", value=eval_metrics)
