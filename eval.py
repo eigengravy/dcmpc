@@ -64,7 +64,7 @@ def eval_checkpoint(cfg: EvalConfig):
     else:
         """Load local path"""
         train_cfg_path = f"{get_original_cwd()}/{cfg.checkpoint.split('checkpoint')[0]}"
-        checkpoint = train_cfg_path
+        checkpoint = f"{get_original_cwd()}/{cfg.checkpoint}"
         train_cfg = OmegaConf.load(f"{train_cfg_path}/.hydra/config.yaml")
     logger.info(f"Env: {train_cfg.env_name} {train_cfg.task_name}")
 
