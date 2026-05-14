@@ -40,7 +40,7 @@ def eval_checkpoint(cfg: EvalConfig):
     import numpy as np
     import torch
     import wandb
-    from dcmpc import DCMPC
+    from dcmpc import DCMPC, DCMPCConfig
     from envs import make_env
     from hydra.core.hydra_config import HydraConfig
     from hydra.utils import get_original_cwd
@@ -67,6 +67,9 @@ def eval_checkpoint(cfg: EvalConfig):
         checkpoint = f"{get_original_cwd()}/{cfg.checkpoint}"
         train_cfg = OmegaConf.load(f"{train_cfg_path}/.hydra/config.yaml")
     logger.info(f"Env: {train_cfg.env_name} {train_cfg.task_name}")
+    train_cfg.agent = OmegaConf.merge(
+        OmegaConf.structured(DCMPCConfig), train_cfg.agent
+    )
 
     ###### Fix seed for reproducibility ######
     random.seed(train_cfg.seed)
