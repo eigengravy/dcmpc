@@ -27,8 +27,13 @@ export NUMEXPR_NUM_THREADS="${NUMEXPR_NUM_THREADS:-2}"
 pids=()
 
 wait_for_slot() {
-  while (( $(jobs -pr | wc -l | tr -d ' ') >= MAX_PARALLEL )); do
+  local active_jobs
+  active_jobs="$(jobs -pr | wc -l | tr -d '[:space:]')"
+  active_jobs="${active_jobs:-0}"
+  while (( active_jobs >= MAX_PARALLEL )); do
     sleep 15
+    active_jobs="$(jobs -pr | wc -l | tr -d '[:space:]')"
+    active_jobs="${active_jobs:-0}"
   done
 }
 
