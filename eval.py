@@ -112,10 +112,6 @@ def eval_checkpoint(cfg: EvalConfig):
     eval_env = make_env(train_cfg, num_envs=cfg.num_eval_episodes)
     train_cfg.update(render_size=cfg.render_size)
 
-    # hack to work with new model
-    train_cfg.agent.use_top_k = True
-    train_cfg.agent.use_mppi_mean = False
-
     # train_cfg.update(max_episode_steps=250)
     # train_cfg.agent.update(mpc=False)
     video_env = None
