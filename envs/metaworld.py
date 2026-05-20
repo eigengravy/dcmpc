@@ -19,6 +19,12 @@ METAWORLD_INFO_KEYS = [
 ]
 
 
+def _normalize_metaworld_info(info):
+    for key in METAWORLD_INFO_KEYS:
+        info[key] = np.asarray(info.get(key, 0.0), dtype=np.float32)
+    return info
+
+
 class MetaWorldWrapper(gym.Wrapper):
     def __init__(self, env, action_repeat: int = 2):
         super().__init__(env)
@@ -33,9 +39,7 @@ class MetaWorldWrapper(gym.Wrapper):
     def reset(self, **kwargs):
         obs, info = super().reset(**kwargs)
         obs = obs.astype(np.float32)
-        for key in METAWORLD_INFO_KEYS:
-            info.setdefault(key, 0.0)
-        return obs, info
+        return obs, _normalize_metaworld_info(info)
 
     def step(self, action):
         reward = 0
@@ -48,9 +52,7 @@ class MetaWorldWrapper(gym.Wrapper):
                 break
         obs = obs.astype(np.float32)
         info.update({"success": success})
-        for key in METAWORLD_INFO_KEYS:
-            info.setdefault(key, 0.0)
-        return (obs, reward, terminated, truncated, info)
+        return (obs, reward, terminated, truncated, _normalize_metaworld_info(info))
 
     @property
     def unwrapped(self):
