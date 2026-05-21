@@ -116,6 +116,7 @@ def train(cfg: TrainConfig):
     if cfg.experiment_tag is not None:
         protocol_tag = f"{protocol_tag}-{cfg.experiment_tag}"
     exp_name = f"{task_tag}-{quantizer_type}-{consistency_loss}-{protocol_tag}-s{cfg.seed}"
+    ckpt_path = f"./best-checkpoint-{exp_name}.pt"
     if cfg.use_wandb:
         writer = WandbLogger(
             exp_name=exp_name,
@@ -171,12 +172,40 @@ def train(cfg: TrainConfig):
         obs_spec=_agent_spec(env.observation_spec["observation"], env),
         act_spec=_agent_spec(env.action_spec, env),
     ).to(cfg.device)
+
+    def checkpoint_key_diff(model_state_dict):
+        agent_keys = set(agent.state_dict().keys())
+        checkpoint_keys = set(model_state_dict.keys())
+        missing_keys = sorted(agent_keys - checkpoint_keys)
+        unexpected_keys = sorted(checkpoint_keys - agent_keys)
+        return missing_keys, unexpected_keys
+
+    def load_agent_checkpoint(model_state_dict, source: str, optional: bool = False):
+        missing_keys, unexpected_keys = checkpoint_key_diff(model_state_dict)
+        if missing_keys or unexpected_keys:
+            message = (
+                f"Checkpoint '{source}' is incompatible with the current agent. "
+                f"Missing keys: {missing_keys[:8]}"
+                f"{'...' if len(missing_keys) > 8 else ''}; "
+                f"Unexpected keys: {unexpected_keys[:8]}"
+                f"{'...' if len(unexpected_keys) > 8 else ''}."
+            )
+            if optional:
+                logger.warning("%s Skipping optional checkpoint load.", message)
+                return False
+            raise RuntimeError(message)
+
+        agent.load_state_dict(model_state_dict)
+        return True
+
     if cfg.checkpoint is not None:
         # Load state dict into this agent from filepath (or dictionary)
         state_dict = torch.load(
-            os.path.join(get_original_cwd(), cfg.checkpoint), weights_only=True
+            os.path.join(get_original_cwd(), cfg.checkpoint),
+            map_location=cfg.device,
+            weights_only=True,
         )
-        agent.load_state_dict(state_dict["model"])
+        load_agent_checkpoint(state_dict["model"], cfg.checkpoint)
         logger.info(f"Loaded checkpoint from {cfg.checkpoint}")
 
     ##### Print information about run #####
@@ -265,13 +294,15 @@ def train(cfg: TrainConfig):
                 "env_step": step * cfg.action_repeat,
                 "step": step,
                 "episode": episode_idx,
+                "checkpoint_quantizer": quantizer_type,
+                "checkpoint_consistency_loss": consistency_loss,
+                "checkpoint_run_name": cfg.run_name,
             }
             if cfg.best_checkpoint_tiebreaker_metric is not None:
                 ckpt_metrics["checkpoint_tiebreaker_metric"] = (
                     cfg.best_checkpoint_tiebreaker_metric
                 )
                 ckpt_metrics["checkpoint_tiebreaker_score"] = eval_checkpoint_score[1]
-            ckpt_path = "./checkpoint.pt"
             agent.save(path=ckpt_path, metrics=ckpt_metrics)
             writer.experiment.save(ckpt_path, policy="now")
 
@@ -362,14 +393,18 @@ def train(cfg: TrainConfig):
     ##### Evaluate the final agent #####
     _ = evaluate_and_log(best_checkpoint_score)
 
-    ckpt_path = "./checkpoint.pt"
     if cfg.log_best_checkpoint_eval and os.path.exists(ckpt_path):
         final_state_dict = {k: v.detach().cpu().clone() for k, v in agent.state_dict().items()}
         checkpoint = torch.load(ckpt_path, map_location=cfg.device, weights_only=True)
-        agent.load_state_dict(checkpoint["model"])
-        _ = evaluate_and_log(best_checkpoint_score, log_prefix="eval_best/", save_best=False)
-        if not cfg.restore_best_checkpoint_at_end:
-            agent.load_state_dict(final_state_dict)
+        loaded_best_checkpoint = load_agent_checkpoint(
+            checkpoint["model"], ckpt_path, optional=True
+        )
+        if loaded_best_checkpoint:
+            _ = evaluate_and_log(
+                best_checkpoint_score, log_prefix="eval_best/", save_best=False
+            )
+            if not cfg.restore_best_checkpoint_at_end:
+                agent.load_state_dict(final_state_dict)
 
     env.close()
     eval_env.close()
