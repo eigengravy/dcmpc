@@ -91,6 +91,8 @@ class DCMPCConfig:
     ddcl_deterministic_eval: bool = False
     """Use deterministic DDCL labels for next-observation CE/MSE targets"""
     ddcl_deterministic_targets: bool = False
+    """Use analytically-derived two-bin soft CE labels from DDCL dither distribution"""
+    ddcl_soft_ce_targets: bool = False
     """(Optionally) use automatic mixed precision"""
     use_amp: bool = False
     """Use straight through Gumbel softmax (hard) or just Gumbel softmax (soft)"""
@@ -492,13 +494,110 @@ class WorldModel(nn.Module):
                             zs_, codebook
                         )
                     elif self.cfg.ce_logits_mode == "mse":
-                        zs["logits"][1:] = torch.einsum(
-                            "hbdic,hbdCc->hbdC", zs_, codebook
+                        # Negative squared Euclidean distance to each codebook vector.
+                        # codebook: [1, 1, 1, C, c]; zs_: [h, b, d, 1, c]
+                        # logits: [h, b, d, C] — higher = closer to codebook entry
+                        diff = zs_ - codebook  # broadcasts → [h, b, d, C, c]
+                        zs["logits"][1:] = -(diff**2).sum(dim=-1)  # [h, b, d, C]
+                if (
+                    self.cfg.ddcl_soft_ce_targets
+                    and isinstance(self._quantizer, DDCLQuantizer)
+                    and self.cfg.ce_logits_mode == "standard"
+                ):
+                    # Compute analytically exact soft CE targets from DDCL dither distribution.
+                    # z_bounded_tar: [batch, groups, n_dims] — deterministic target encoding
+                    z_bounded_tar = (
+                        self._quantizer.scale * torch.tanh(zs_tar["z"])
+                    ).float()  # [batch, groups, n_dims]
+                    m_det = torch.floor(
+                        z_bounded_tar / self._quantizer.delta
+                    ).long()  # bin index
+                    f = z_bounded_tar / self._quantizer.delta - m_det.float()  # frac ∈ [0,1)
+
+                    m_adj = torch.where(f < 0.5, m_det - 1, m_det + 1)
+                    p_det = torch.where(f < 0.5, 0.5 + f, 1.5 - f)
+                    p_adj = 1.0 - p_det
+
+                    n_levels = self._quantizer.n_levels
+                    min_m = self._quantizer.min_m
+                    # Clamp to valid bin range. At boundary bins, m_adj may equal m_det
+                    # after clamping; scatter_add_ correctly accumulates total probability
+                    # (p_det + p_adj = 1.0) into the boundary bin.
+                    m_det_shifted = (m_det - min_m).clamp(0, n_levels - 1)
+                    m_adj_shifted = (m_adj - min_m).clamp(0, n_levels - 1)
+
+                    # Joint soft label over the full group codebook (n_levels^n_dims entries).
+                    #
+                    # DDCL quantizes each dimension independently with dither
+                    # ε_i ~ U(-δ/2, δ/2), so the per-dimension distributions are
+                    # independent. The joint distribution over the Cartesian-product
+                    # codebook is therefore the outer product of the per-dim two-bin
+                    # marginals, giving at most 2^n_dims nonzero entries per group.
+                    #
+                    # We enumerate all 2^n_dims corners of the dither region explicitly.
+                    # For n_dims=1: 2 corners — identical to the old per-dim path.
+                    # For n_dims=2: 4 corners — (det,det),(adj,det),(det,adj),(adj,adj).
+                    # For n_dims=k: 2^k corners — exponential but k is small (1–4).
+                    #
+                    # m_det_shifted, m_adj_shifted: [batch, groups, n_dims]  (long)
+                    # p_det, p_adj:                 [batch, groups, n_dims]  (float32)
+                    # _offsets:                     [n_dims]  mixed-radix weights
+                    #   offsets[i] = n_levels^(n_dims-1-i), so
+                    #   joint_index = Σ_i  m_shifted_i * offsets[i]
+                    n_dims_q = self._quantizer.n_dims
+                    codebook_size = self._quantizer.codebook_size  # n_levels^n_dims
+                    offsets = self._quantizer._offsets  # [n_dims], long buffer
+
+                    # Stack per-dim candidates along a new leading axis:
+                    #   index 0 → deterministic bin choice
+                    #   index 1 → adjacent bin choice
+                    # Shape of each: [2, batch, groups, n_dims]
+                    m_cands = torch.stack([m_det_shifted, m_adj_shifted], dim=0)
+                    p_cands = torch.stack([p_det.float(), p_adj.float()], dim=0)
+
+                    # Accumulate the joint soft label.
+                    # zs_tar["z"] has shape [horizon, batch, groups, n_dims], so
+                    # m_det.shape[:-1] = [horizon, batch, groups] and
+                    # joint_soft_label has shape [horizon, batch, groups, codebook_size].
+                    joint_soft_label = torch.zeros(
+                        *m_det.shape[:-1], codebook_size,
+                        device=m_det.device, dtype=torch.float32,
+                    )
+
+                    for corner_bits in range(1 << n_dims_q):
+                        # choices[i] ∈ {0, 1}: 0 = det, 1 = adj for dimension i
+                        choices = [(corner_bits >> i) & 1 for i in range(n_dims_q)]
+
+                        # Mixed-radix joint codebook index: [horizon, batch, groups]
+                        joint_idx = sum(
+                            m_cands[c][..., i] * offsets[i]
+                            for i, c in enumerate(choices)
                         )
-                _tc_loss = torch.vmap(torch.vmap(F.cross_entropy))(
-                    zs["logits"][1:],
-                    zs_tar["indices"].to(torch.long),
-                )
+
+                        # Joint probability = product of per-dim marginals: [horizon, batch, groups]
+                        joint_prob = p_cands[choices[0]][..., 0]
+                        for i in range(1, n_dims_q):
+                            joint_prob = joint_prob * p_cands[choices[i]][..., i]
+
+                        joint_soft_label.scatter_add_(
+                            -1,
+                            joint_idx.unsqueeze(-1).long(),
+                            joint_prob.unsqueeze(-1),
+                        )
+
+                    # Soft CE loss — no expand needed: joint_soft_label already
+                    # carries the horizon dimension from zs_tar["z"].
+                    # joint_soft_label: [horizon, batch, groups, codebook_size]
+                    # zs["logits"][1:]: [horizon, batch, groups, codebook_size]
+                    log_probs = F.log_softmax(zs["logits"][1:], dim=-1)
+                    _tc_loss = -(joint_soft_label * log_probs).sum(dim=-1)
+                    # [horizon, batch, groups] → mean over groups → [horizon, batch]
+                    _tc_loss = _tc_loss.mean(dim=-1)
+                else:
+                    _tc_loss = torch.vmap(torch.vmap(F.cross_entropy))(
+                        zs["logits"][1:],
+                        zs_tar["indices"].to(torch.long),
+                    )
             elif self.cfg.consistency_loss == "cosine":
                 _tc_loss = -nn.CosineSimilarity(dim=-1, eps=1e-6)(
                     zs["codes"][1:], zs_tar["codes"]
@@ -599,8 +698,15 @@ class WorldModel(nn.Module):
 
         if isinstance(self._quantizer, DDCLQuantizer):
             z_bounded = self._quantizer.scale * torch.tanh(z["z"])
+            # Use the *unsigned* formula log₂(|z|/δ + 1), which matches the DDCL
+            # paper (Runge et al., 2024) and the training comm_loss in layers.py.
+            # A previous version of this metric used log₂(2|z|/δ + 1) (signed),
+            # which inflates reported bits by ~36% at typical operating magnitudes.
+            # Corrected 2026-05-21. All DDCL runs before this date have the inflated
+            # value logged to W&B; use rate/ddcl_loss_bits_per_dim × n_total_dims
+            # to recover the correct value from those historical runs.
             allocated_bits = torch.log2(
-                2.0 * z_bounded.abs() / self._quantizer.delta + 1.0
+                z_bounded.abs() / self._quantizer.delta + 1.0
             ).sum(dim=(-2, -1))
             allocated_bits_per_transition = allocated_bits.mean().item()
         else:

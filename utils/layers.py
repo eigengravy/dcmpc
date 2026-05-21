@@ -138,6 +138,11 @@ class DDCLQuantizer(nn.Module):
         z_hat = c_m - epsilon
         z_approx = z_bounded + (z_hat - z_bounded).detach()
 
+        # Unsigned rate formula: log₂(|z|/δ + 1), matching the DDCL paper
+        # (Runge et al., 2024). This penalises the magnitude of z_bounded,
+        # yielding 0 bits at |z|=0 and growing logarithmically with precision.
+        # The logged metric (rate/allocated_bits_per_transition in dcmpc.py)
+        # now uses the same unsigned formula (corrected 2026-05-21).
         comm_loss = self.ddcl_lambda * torch.log2(
             z_bounded.abs() / self.delta + 1.0
         ).mean()
