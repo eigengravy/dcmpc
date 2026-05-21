@@ -73,6 +73,7 @@ DEFAULT_DIAGNOSTIC_METRICS = (
     "train/.exploration_noise",
     "eval/.comms_bits",
     "eval/.rate/ddcl_loss_bits_per_dim",
+    "eval/.rate/ddcl_signed_bits_per_dim",
     "eval/.rate/ddcl_signed_bits_per_transition",
     "eval/.codebook/usage_percent",
     "eval/.codebook/per_group_entropy_mean",
@@ -83,6 +84,7 @@ DEFAULT_DIAGNOSTIC_METRICS = (
     "eval_best/.rate/allocated_bits_per_transition",
     "eval_best/.rate/empirical_entropy_bits_per_transition",
     "eval_best/.rate/ddcl_loss_bits_per_dim",
+    "eval_best/.rate/ddcl_signed_bits_per_dim",
     "eval_best/.rate/ddcl_signed_bits_per_transition",
     "eval_best/.codebook/usage_percent",
     "eval_best/.codebook/per_group_entropy_mean",
@@ -100,6 +102,7 @@ DEFAULT_DIAGNOSTIC_METRICS = (
     "train/exploration_noise",
     "eval/comms_bits",
     "eval/rate/ddcl_loss_bits_per_dim",
+    "eval/rate/ddcl_signed_bits_per_dim",
     "eval/rate/ddcl_signed_bits_per_transition",
     "eval/quantizer/codebook_usage",
     "eval/quantizer/perplexity",
@@ -110,6 +113,7 @@ DEFAULT_DIAGNOSTIC_METRICS = (
     "eval_best/rate/allocated_bits_per_transition",
     "eval_best/rate/empirical_entropy_bits_per_transition",
     "eval_best/rate/ddcl_loss_bits_per_dim",
+    "eval_best/rate/ddcl_signed_bits_per_dim",
     "eval_best/rate/ddcl_signed_bits_per_transition",
     "eval_best/codebook/usage_percent",
     "eval_best/codebook/per_group_entropy_mean",
@@ -362,6 +366,40 @@ def selected_config(config: dict[str, Any]) -> dict[str, Any]:
     return selected
 
 
+def corrected_ddcl_allocated_bits(summary: dict[str, Any]) -> float | None:
+    """Compute the correct DDCL allocated_bits_per_transition using the unsigned formula.
+
+    DDCL runs before 2026-05-21 logged rate/allocated_bits_per_transition with
+    the signed formula log2(2|z|/δ+1), inflating the value by ~36% relative to
+    the DDCL-paper unsigned formula log2(|z|/δ+1) used in the training comm_loss.
+
+    The correct value is recoverable as:
+        corrected = rate/ddcl_loss_bits_per_dim × n_total_dims
+    where n_total_dims = ddcl_signed_bits_per_transition / ddcl_signed_bits_per_dim.
+
+    Returns None if required metrics are absent (non-DDCL runs) or if the
+    denominator is near zero.
+    """
+    def get_val(key: str) -> float | None:
+        # Try slash form, then dot form (older W&B logging)
+        val = summary.get(key) or summary.get(key.replace("/", "."))
+        return as_float(val)
+
+    # Try eval_best/ prefix first, then eval/ prefix
+    for prefix in ("eval_best/", "eval/"):
+        loss_pd = get_val(f"{prefix}rate/ddcl_loss_bits_per_dim")
+        signed_pd = get_val(f"{prefix}rate/ddcl_signed_bits_per_dim")
+        signed_total = get_val(f"{prefix}rate/ddcl_signed_bits_per_transition")
+        if loss_pd is not None and signed_pd is not None and signed_total is not None:
+            if abs(signed_pd) < 1e-9:
+                continue
+            n_total_dims = round(signed_total / signed_pd)
+            if n_total_dims <= 0:
+                continue
+            return loss_pd * n_total_dims
+    return None
+
+
 def build_run_reports(
     runs: Iterable[Any],
     metrics: list[str],
@@ -533,6 +571,29 @@ def generate_suggestions(reports: list[RunReport]) -> list[str]:
                 )
                 break
 
+    # Warn about pre-2026-05-21 DDCL rate metric inflation
+    ddcl_inflation_warned = False
+    for report in reports[:20]:
+        if ddcl_inflation_warned:
+            break
+        corrected = corrected_ddcl_allocated_bits(report.summary)
+        if corrected is None:
+            continue
+        raw_key = next(
+            (k for k in ("eval_best/rate/allocated_bits_per_transition",
+                         "eval_best.rate.allocated_bits_per_transition")
+             if report.summary.get(k) is not None), None
+        )
+        raw = as_float(report.summary.get(raw_key)) if raw_key else None
+        if raw is not None and abs(raw - corrected) / max(abs(corrected), 1.0) > 0.05:
+            suggestions.append(
+                f"DDCL rate correction: {report.name} shows logged allocated_bits={fmt(raw)} "
+                f"but unsigned-formula corrected={fmt(corrected)}. "
+                "Pre-2026-05-21 runs used the signed formula (×~1.36). "
+                "See the 'DDCL Rate Correction' section below."
+            )
+            ddcl_inflation_warned = True
+
     unique_suggestions = []
     for suggestion in suggestions:
         if suggestion not in unique_suggestions:
@@ -632,6 +693,41 @@ def render_markdown(
     if mostly_missing:
         lines.extend(["", "## Metrics Not Found", ""])
         lines.extend(f"- `{metric}`" for metric in mostly_missing)
+
+    # ── DDCL rate correction note (2026-05-21) ────────────────────────────────
+    # Runs before 2026-05-21 logged rate/allocated_bits_per_transition with the
+    # signed formula log2(2|z|/δ+1), which inflates the true value by ~36%.
+    # The correct value uses the unsigned formula: ddcl_loss_bits_per_dim × n_total_dims.
+    ddcl_corrections: list[tuple[str, float, float]] = []
+    for report in reports:
+        corrected = corrected_ddcl_allocated_bits(report.summary)
+        if corrected is None:
+            continue
+        # Find the logged allocated_bits value from any form
+        raw_key = next(
+            (k for k in ("eval_best/rate/allocated_bits_per_transition",
+                         "eval_best.rate.allocated_bits_per_transition")
+             if report.summary.get(k) is not None), None
+        )
+        raw = as_float(report.summary.get(raw_key)) if raw_key else None
+        if raw is not None and abs(raw - corrected) > 0.5:
+            ddcl_corrections.append((report.name, raw, corrected))
+
+    if ddcl_corrections:
+        lines.extend(["", "## DDCL Rate Correction (2026-05-21)", ""])
+        lines.append(
+            "> Runs before 2026-05-21 logged `rate/allocated_bits_per_transition` with the "
+            "signed formula `log2(2|z|/δ+1)`, inflating values by ~36%. "
+            "Corrected = `ddcl_loss_bits_per_dim × n_total_dims` (unsigned formula, matches training comm_loss)."
+        )
+        lines.extend(["", "| Run | Logged (inflated) | Corrected (unsigned) | Δ |", "| --- | ---: | ---: | ---: |"])
+        for name, raw, corrected in ddcl_corrections:
+            delta = corrected - raw
+            lines.append(f"| {name.replace('|', '/')} | {fmt(raw)} | {fmt(corrected)} | {fmt(delta)} |")
+        lines.extend(["",
+            "> Use `rate/empirical_entropy_bits_per_transition` for all cross-method Pareto comparisons. "
+            "`allocated_bits` is DDCL-specific and should only be used in DDCL-only ablations."
+        ])
 
     lines.extend(
         [

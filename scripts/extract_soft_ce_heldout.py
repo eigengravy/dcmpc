@@ -32,7 +32,10 @@ METRICS_OF_INTEREST = [
     "episodic_precision_success_0p08",
     "episodic_return",
     "rate/empirical_entropy_bits_per_transition",
-    "rate/allocated_bits_per_transition",
+    "rate/allocated_bits_per_transition",   # may be inflated pre-2026-05-21; corrected below
+    "rate/ddcl_loss_bits_per_dim",          # for unsigned-formula correction
+    "rate/ddcl_signed_bits_per_dim",        # denominator for n_total_dims derivation
+    "rate/ddcl_signed_bits_per_transition", # numerator for n_total_dims derivation
     "codebook/usage_percent",
     "codebook/per_group_entropy_mean",
 ]
@@ -83,10 +86,41 @@ def main() -> int:
         print("ERROR: No finished/crashed runs found.")
         return 1
 
+    # ── Correct DDCL allocated_bits to use the unsigned formula ───────────────
+    # DDCL runs before 2026-05-21 logged rate/allocated_bits_per_transition with
+    # the signed formula log2(2|z|/δ+1), which inflates the value by ~36% vs
+    # the DDCL-paper unsigned formula log2(|z|/δ+1) used in training comm_loss.
+    # Corrected = rate/ddcl_loss_bits_per_dim × n_total_dims, where
+    # n_total_dims = ddcl_signed_bits_per_transition / ddcl_signed_bits_per_dim.
+    loss_pd_vals  = metric_values.get("rate/ddcl_loss_bits_per_dim", [])
+    signed_pd_vals = metric_values.get("rate/ddcl_signed_bits_per_dim", [])
+    signed_tot_vals = metric_values.get("rate/ddcl_signed_bits_per_transition", [])
+
+    if (len(loss_pd_vals) == len(signed_pd_vals) == len(signed_tot_vals) > 0
+            and all(abs(v) > 1e-9 for v in signed_pd_vals)):
+        corrected_vals = []
+        for loss, spd, stot in zip(loss_pd_vals, signed_pd_vals, signed_tot_vals):
+            n_total_dims = round(stot / spd)
+            corrected_vals.append(loss * n_total_dims)
+        raw_vals = metric_values.get("rate/allocated_bits_per_transition", [])
+        if raw_vals:
+            raw_mean = float(np.mean(raw_vals))
+            corr_mean = float(np.mean(corrected_vals))
+            print(f"\n  Rate correction: raw allocated_bits mean={raw_mean:.2f} → "
+                  f"corrected={corr_mean:.2f} (unsigned formula, Δ={corr_mean - raw_mean:.2f})")
+        metric_values["rate/allocated_bits_per_transition"] = corrected_vals
+        print(f"  Using corrected allocated_bits (unsigned formula log2(|z|/δ+1) × n_total_dims)")
+    elif metric_values.get("rate/allocated_bits_per_transition"):
+        print("  WARNING: Could not compute rate correction (missing ddcl_signed metrics). "
+              "Using raw allocated_bits_per_transition — may be inflated for pre-2026-05-21 runs.")
+
     # Build output dict in the canonical heldout format
+    # Drop the auxiliary correction metrics — they are not needed in the output JSON
+    _internal_keys = {"rate/ddcl_loss_bits_per_dim", "rate/ddcl_signed_bits_per_dim",
+                      "rate/ddcl_signed_bits_per_transition"}
     metrics_blob: dict = {}
     for metric, values in metric_values.items():
-        if not values:
+        if metric in _internal_keys or not values:
             continue
         arr = np.array(values, dtype=float)
         metrics_blob[metric] = {
