@@ -3,7 +3,7 @@ set -euo pipefail
 
 ENV_NAME="${ENV_NAME:-mw-button-press}"
 SEEDS="${SEEDS:-0 1 2 3 4}"
-AGENTS="${AGENTS:-ddcl_ce dcmpc vq_ce continuous_mse}"
+AGENTS="${AGENTS:-ddcl_cosine ddcl_ce dcmpc vq_ce continuous_mse}"
 DEVICE="${DEVICE:-cuda}"
 USE_WANDB="${USE_WANDB:-true}"
 WANDB_PROJECT_NAME="${WANDB_PROJECT_NAME:-ddcl_mbrl_metaworld}"
@@ -48,7 +48,15 @@ launch_job() {
   echo "Launching Meta-World baseline: env=${ENV_NAME} agent=${agent} seed=${seed} project=${WANDB_PROJECT_NAME} log=${log_file}"
   mkdir -p "${hydra_dir}"
   (
-    nice -n "${NICE_LEVEL}" "${PYTHON_BIN}" train.py \
+    if [[ "${NICE_LEVEL}" == "0" ]]; then
+      runner=("${PYTHON_BIN}")
+    elif nice -n "${NICE_LEVEL}" true >/dev/null 2>&1; then
+      runner=(nice -n "${NICE_LEVEL}" "${PYTHON_BIN}")
+    else
+      echo "Warning: nice level ${NICE_LEVEL} is not permitted; running without nice."
+      runner=("${PYTHON_BIN}")
+    fi
+    "${runner[@]}" train.py \
       env="${ENV_NAME}" \
       agent="${agent}" \
       seed="${seed}" \

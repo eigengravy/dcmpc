@@ -98,10 +98,26 @@ def train(cfg: TrainConfig):
     torch.manual_seed(cfg.seed)
     torch.backends.cudnn.deterministic = True
 
-    if torch.cuda.is_available() and (cfg.device == "cuda"):
+    requested_device = str(cfg.device)
+    if requested_device == "auto":
+        if torch.cuda.is_available():
+            cfg.device = "cuda"
+        else:
+            cfg.device = "cpu"
+    elif requested_device == "cuda" and torch.cuda.is_available():
         cfg.device = "cuda"
-    else:
+    elif requested_device == "mps" and torch.backends.mps.is_available():
+        cfg.device = "mps"
+    elif requested_device == "cpu":
         cfg.device = "cpu"
+    elif requested_device in {"cuda", "mps"}:
+        logger.warning(
+            "Requested device %s is unavailable in this environment; falling back to CPU.",
+            requested_device,
+        )
+        cfg.device = "cpu"
+    else:
+        cfg.device = requested_device
 
     ###### Initialise W&B ######
     os.environ["WANDB_SILENT"] = "true" if cfg.wandb_silent else "false"
@@ -244,6 +260,82 @@ def train(cfg: TrainConfig):
         )
         return (primary, tiebreaker)
 
+    def checkpoint_metadata(ckpt_metrics):
+        metadata = {}
+        for key, value in ckpt_metrics.items():
+            if isinstance(value, torch.Tensor):
+                metadata[key] = scalar_float(value)
+            else:
+                metadata[key] = value
+        metadata.update(
+            {
+                "checkpoint_filename": "checkpoint.pt",
+                "checkpoint_role": "eval",
+                "checkpoint_selection": "best",
+                "env_name": cfg.env_name,
+                "task_name": cfg.task_name,
+                "seed": cfg.seed,
+                "agent_quantizer": quantizer_type,
+                "agent_consistency_loss": consistency_loss,
+            }
+        )
+        return metadata
+
+    def log_eval_checkpoint_to_wandb(ckpt_path, ckpt_metrics):
+        if not cfg.use_wandb:
+            return
+
+        try:
+            import wandb
+
+            run = wandb.run
+            if run is None:
+                return
+
+            metadata = checkpoint_metadata(ckpt_metrics)
+            artifact_name = f"{run.id}-eval-checkpoint"
+            artifact = wandb.Artifact(
+                name=artifact_name,
+                type="model",
+                description=(
+                    "Best checkpoint selected during training. Use this "
+                    "checkpoint.pt for eval.py checkpoint re-evaluation."
+                ),
+                metadata=metadata,
+            )
+            artifact.add_file(ckpt_path, name="checkpoint.pt")
+            run.log_artifact(
+                artifact,
+                aliases=["best", "eval-checkpoint", "latest"],
+            )
+            run.summary.update(
+                {
+                    "eval_checkpoint/artifact": artifact_name,
+                    "eval_checkpoint/filename": "checkpoint.pt",
+                    "eval_checkpoint/checkpoint_metric": metadata.get(
+                        "checkpoint_metric"
+                    ),
+                    "eval_checkpoint/checkpoint_score": metadata.get(
+                        "checkpoint_score"
+                    ),
+                    "eval_checkpoint/env_step": metadata.get("env_step"),
+                    "eval_checkpoint/episode": metadata.get("episode"),
+                }
+            )
+
+            note = (
+                "Eval checkpoint available: use artifact alias "
+                f"{artifact_name}:eval-checkpoint / checkpoint.pt for rerunning "
+                "eval.py. This checkpoint was selected by "
+                f"{metadata.get('checkpoint_metric')}="
+                f"{metadata.get('checkpoint_score')}."
+            )
+            previous_notes = getattr(run, "notes", None) or ""
+            if note not in previous_notes:
+                run.notes = f"{previous_notes}\n\n{note}".strip()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Could not log eval checkpoint artifact to W&B: %s", exc)
+
     def evaluate_and_log(
         best_checkpoint_score=None,
         log_prefix: str = "eval/",
@@ -288,7 +380,7 @@ def train(cfg: TrainConfig):
         ):
             best_checkpoint_score = eval_checkpoint_score
             ckpt_metrics = {
-                "episodic_return": eval_metrics["episodic_return"],
+                "episodic_return": scalar_float(eval_metrics["episodic_return"]),
                 "checkpoint_metric": cfg.best_checkpoint_metric,
                 "checkpoint_score": eval_checkpoint_score[0],
                 "env_step": step * cfg.action_repeat,
@@ -305,6 +397,7 @@ def train(cfg: TrainConfig):
                 ckpt_metrics["checkpoint_tiebreaker_score"] = eval_checkpoint_score[1]
             agent.save(path=ckpt_path, metrics=ckpt_metrics)
             writer.experiment.save(ckpt_path, policy="now")
+            log_eval_checkpoint_to_wandb(ckpt_path, ckpt_metrics)
 
         return eval_metrics, best_checkpoint_score
 
@@ -387,8 +480,11 @@ def train(cfg: TrainConfig):
                     )
                     break
 
-        # Release some GPU memory (if possible)
-        torch.cuda.empty_cache()
+        # Release accelerator memory when possible.
+        if cfg.device == "cuda":
+            torch.cuda.empty_cache()
+        elif cfg.device == "mps":
+            torch.mps.empty_cache()
 
     ##### Evaluate the final agent #####
     _ = evaluate_and_log(best_checkpoint_score)
@@ -403,6 +499,12 @@ def train(cfg: TrainConfig):
             _ = evaluate_and_log(
                 best_checkpoint_score, log_prefix="eval_best/", save_best=False
             )
+            completion_ckpt_metrics = {
+                key: value
+                for key, value in checkpoint.items()
+                if key not in ("model", "model_opt", "pi_opt", "q_opt")
+            }
+            log_eval_checkpoint_to_wandb(ckpt_path, completion_ckpt_metrics)
             if not cfg.restore_best_checkpoint_at_end:
                 agent.load_state_dict(final_state_dict)
 

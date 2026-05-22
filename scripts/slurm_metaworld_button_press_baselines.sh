@@ -4,7 +4,7 @@ set -euo pipefail
 LAUNCHER="${LAUNCHER:-slurm}"
 ENV_NAME="${ENV_NAME:-mw-button-press}"
 SEEDS="${SEEDS:-0,1,2,3,4}"
-AGENTS="${AGENTS:-ddcl_ce,dcmpc,vq_ce,continuous_mse}"
+AGENTS="${AGENTS:-ddcl_cosine,ddcl_ce,dcmpc,vq_ce,continuous_mse}"
 DEVICE="${DEVICE:-cuda}"
 WANDB_PROJECT_NAME="${WANDB_PROJECT_NAME:-ddcl_mbrl_metaworld}"
 EXPERIMENT_TAG="${EXPERIMENT_TAG:-metaworld-paper-v1}"

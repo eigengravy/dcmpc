@@ -2,10 +2,11 @@
 set -euo pipefail
 
 PYTHON_BIN="${PYTHON_BIN:-python}"
-DEVICE="${DEVICE:-cpu}"
+DEVICE="${DEVICE:-auto}"
 USE_WANDB="${USE_WANDB:-true}"
 WANDB_PROJECT_NAME="${WANDB_PROJECT_NAME:-ddcl_mbrl_toy_eval}"
 NUM_EVAL_EPISODES="${NUM_EVAL_EPISODES:-50}"
+EVAL_SEED="${EVAL_SEED:-}"
 MAX_PARALLEL="${MAX_PARALLEL:-2}"
 RUN_ROOT="${RUN_ROOT:-output/toy_runs/paper_checkpoint_reeval_$(date +%Y%m%d_%H%M%S)}"
 FINAL_ROOT="${FINAL_ROOT:-output/toy_runs/final_v1_20260512_234000/hydra}"
@@ -56,6 +57,7 @@ launch_eval() {
       use_wandb="${USE_WANDB}" \
       wandb_project_name="${WANDB_PROJECT_NAME}" \
       run_name="paper-reeval-${safe_label}" \
+      ${EVAL_SEED:+eval_seed="${EVAL_SEED}"} \
       hydra.run.dir="${hydra_dir}"
   ) >"${log_file}" 2>&1 &
   pids+=("$!")
@@ -69,6 +71,7 @@ launch_eval() {
   echo "ce_root=${CE_ROOT}"
   echo "ce_variant=${CE_VARIANT}"
   echo "num_eval_episodes=${NUM_EVAL_EPISODES}"
+  echo "eval_seed=${EVAL_SEED:-train_seed}"
   echo "wandb_project=${WANDB_PROJECT_NAME}"
   echo "git_head=$(git rev-parse --short HEAD 2>/dev/null || echo unavailable)"
   echo "git_status_start"

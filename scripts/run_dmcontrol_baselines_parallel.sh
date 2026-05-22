@@ -5,7 +5,7 @@ set -euo pipefail
 # With max_episode_steps=1000 and action_repeat=2, one episode is 1000 env steps.
 TASK_SPECS="${TASK_SPECS:-walker-walk:200:10 dog-run:1000:50 humanoid-walk:1000:50 reacher-easy:1000:50}"
 SEEDS="${SEEDS:-0 1 2 3 4}"
-AGENTS="${AGENTS:-ddcl_ce dcmpc vq_ce continuous_mse}"
+AGENTS="${AGENTS:-ddcl_cosine ddcl_ce dcmpc vq_ce continuous_mse}"
 DEVICE="${DEVICE:-cuda}"
 USE_WANDB="${USE_WANDB:-true}"
 WANDB_PROJECT_NAME="${WANDB_PROJECT_NAME:-ddcl_mbrl_dmcontrol}"

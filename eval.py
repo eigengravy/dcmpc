@@ -72,18 +72,30 @@ def eval_checkpoint(cfg: EvalConfig):
     )
 
     ###### Fix seed for reproducibility ######
-    random.seed(train_cfg.seed)
-    np.random.seed(train_cfg.seed)
-    torch.manual_seed(train_cfg.seed)
+    eval_seed = train_cfg.seed if cfg.eval_seed is None else cfg.eval_seed
+    random.seed(eval_seed)
+    np.random.seed(eval_seed)
+    torch.manual_seed(eval_seed)
     torch.backends.cudnn.deterministic = True
 
-    if torch.cuda.is_available() and (cfg.device == "cuda"):
+    requested_device = str(cfg.device)
+    if requested_device == "auto":
+        if torch.cuda.is_available():
+            cfg.device = "cuda"
+        else:
+            cfg.device = "cpu"
+    elif requested_device == "cuda" and torch.cuda.is_available():
         cfg.device = "cuda"
-        train_cfg.device = "cuda"
-    else:
+    elif requested_device == "mps" and torch.backends.mps.is_available():
+        cfg.device = "mps"
+    elif requested_device == "cpu":
         cfg.device = "cpu"
-        train_cfg.device = "cpu"
-        train_cfg.agent.device = "cpu"
+    elif requested_device in {"cuda", "mps"}:
+        cfg.device = "cpu"
+    else:
+        cfg.device = requested_device
+    train_cfg.device = cfg.device
+    train_cfg.agent.device = cfg.device
 
     ###### Initialise W&B ######
     if cfg.use_wandb:
@@ -95,6 +107,7 @@ def eval_checkpoint(cfg: EvalConfig):
             tags=[
                 f"{train_cfg.env_name}-{train_cfg.task_name}",
                 f"seed={str(train_cfg.seed)}",
+                f"eval_seed={str(eval_seed)}",
             ],
             save_code=True,
         )

@@ -4,6 +4,7 @@ set -euo pipefail
 LAUNCHER="${LAUNCHER:-slurm}"
 ENV_NAME="${ENV_NAME:-mw-button-press}"
 SEEDS="${SEEDS:-0,1,2,3,4}"
+DDCL_AGENT="${DDCL_AGENT:-ddcl_cosine}"
 LAMBDAS="${LAMBDAS:-0,1e-5,3e-5,1e-4,3e-4,1e-3,3e-3}"
 DELTAS="${DELTAS:-0.5,1.0,2.0}"
 DEVICE="${DEVICE:-cuda}"
@@ -22,6 +23,7 @@ GRES="${GRES:-gpu:1}"
 
 echo "Submitting Meta-World DDCL sensitivity"
 echo "  env=${ENV_NAME}"
+echo "  ddcl_agent=${DDCL_AGENT}"
 echo "  lambdas=${LAMBDAS}"
 echo "  deltas=${DELTAS}"
 echo "  seeds=${SEEDS}"
@@ -31,7 +33,7 @@ echo "  experiment_tag=${EXPERIMENT_TAG}"
 python train.py --multirun \
   "hydra/launcher=${LAUNCHER}" \
   "env=${ENV_NAME}" \
-  "agent=ddcl_ce" \
+  "agent=${DDCL_AGENT}" \
   "seed=${SEEDS}" \
   "device=${DEVICE}" \
   "use_wandb=true" \

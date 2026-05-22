@@ -97,6 +97,11 @@ def symlog(x):
 @torch.no_grad()
 def calc_rank(name, z):
     """Log rank of latent"""
+    # MPS does not implement the SVD op used by matrix_rank/cond. These rank
+    # metrics are diagnostics only, so compute them on CPU without moving the
+    # training model or rollout tensors off the accelerator.
+    if z.device.type == "mps":
+        z = z.detach().cpu()
     rank3 = matrix_rank(z, atol=1e-3, rtol=1e-3)
     rank2 = matrix_rank(z, atol=1e-2, rtol=1e-2)
     rank1 = matrix_rank(z, atol=1e-1, rtol=1e-1)

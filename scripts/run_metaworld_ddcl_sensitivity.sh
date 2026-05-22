@@ -3,6 +3,7 @@ set -euo pipefail
 
 ENV_NAME="${ENV_NAME:-mw-button-press}"
 SEEDS="${SEEDS:-0 1 2 3 4}"
+DDCL_AGENT="${DDCL_AGENT:-ddcl_cosine}"
 LAMBDAS="${LAMBDAS:-0 1e-5 3e-5 1e-4 3e-4 1e-3 3e-3}"
 DELTAS="${DELTAS:-0.5 1.0 2.0}"
 DEVICE="${DEVICE:-cuda}"
@@ -56,16 +57,16 @@ launch_job() {
   local safe_delta
   safe_lambda="$(sanitize_value "${lambda}")"
   safe_delta="$(sanitize_value "${delta}")"
-  local run_id="${ENV_NAME}--ddcl_ce--lambda${safe_lambda}--delta${safe_delta}--s${seed}"
+  local run_id="${ENV_NAME}--${DDCL_AGENT}--lambda${safe_lambda}--delta${safe_delta}--s${seed}"
   local log_file="${RUN_ROOT}/logs/${run_id}.log"
   local hydra_dir="${RUN_ROOT}/hydra/${run_id}"
 
-  echo "Launching Meta-World DDCL sensitivity: env=${ENV_NAME} lambda=${lambda} delta=${delta} seed=${seed} project=${WANDB_PROJECT_NAME} log=${log_file}"
+  echo "Launching Meta-World DDCL sensitivity: env=${ENV_NAME} agent=${DDCL_AGENT} lambda=${lambda} delta=${delta} seed=${seed} project=${WANDB_PROJECT_NAME} log=${log_file}"
   mkdir -p "${hydra_dir}"
   (
     nice -n "${NICE_LEVEL}" "${PYTHON_BIN}" train.py \
       env="${ENV_NAME}" \
-      agent=ddcl_ce \
+      agent="${DDCL_AGENT}" \
       seed="${seed}" \
       device="${DEVICE}" \
       use_wandb="${USE_WANDB}" \
@@ -85,6 +86,7 @@ launch_job() {
 
 echo "Meta-World DDCL sensitivity run"
 echo "  env=${ENV_NAME}"
+echo "  ddcl_agent=${DDCL_AGENT}"
 echo "  lambdas=${LAMBDAS}"
 echo "  deltas=${DELTAS}"
 echo "  seeds=${SEEDS}"
@@ -97,6 +99,7 @@ echo "  best_checkpoint_metric=${BEST_CHECKPOINT_METRIC}"
   echo "started_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   echo "cwd=$(pwd)"
   echo "env=${ENV_NAME}"
+  echo "ddcl_agent=${DDCL_AGENT}"
   echo "lambdas=${LAMBDAS}"
   echo "deltas=${DELTAS}"
   echo "seeds=${SEEDS}"

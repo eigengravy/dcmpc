@@ -44,6 +44,10 @@ python train.py env=walker-walk ++use_wandb=True
 ```
 All tested tasks are listed in`cfgs/env`.
 
+For the DDCL workshop-paper reproduction workflow, including toy scripts,
+remote-cluster Meta-World/DMControl launchers, checkpoint artifact handoff, and
+paper plotting, see `REPRODUCING.md`.
+
 ## Configuring experiments
 This repo uses hydra for configuration.
 You can easily try new hyperparameters for `DC-MPC` by overriding them on the command line. For example,

@@ -41,7 +41,7 @@ class TrainConfig:
     prefetch: int = 5
     seed: int = 42
     checkpoint: Optional[str] = None  # /file/path/to/checkpoint
-    device: str = "cuda"  # "cpu" or "cuda" etc
+    device: str = "cuda"  # "auto", "cpu", "cuda", or explicit experimental "mps"
     env_device: str = "cpu"  # DMControl/MetaWorld on cpu but maniskill/isaac on cuda
     verbose: bool = False  # if true print training progress
     log_best_checkpoint_eval: bool = True
@@ -102,6 +102,7 @@ class EvalConfig:
 
     checkpoint: str = "output/hydra/train/2024-11-24_13-41-38/checkpoint"
     num_eval_episodes: int = 10
+    eval_seed: Optional[int] = None
     capture_eval_video: bool = True
     render_size: int = 1080  # height/width of pixel observations
     device: str = "cuda"
@@ -192,8 +193,104 @@ class DDCLMSEConfig(DCMPCConfig):
     ddcl_deterministic_targets: bool = True
 
 
+@dataclass
+class DDCLCosineConfig(DCMPCConfig):
+    """DDCL quantizer + cosine SPR/TD-MPC2-style stop-gradient latent self-prediction"""
+
+    quantizer: str = "ddcl"
+    consistency_loss: str = "cosine"
+    ddcl_deterministic_eval: bool = True
+    ddcl_deterministic_targets: bool = True
+
+
+@dataclass
+class DDCLSoftCEConfig(DCMPCConfig):
+    """DDCL quantizer + analytically-derived soft CE labels from dither distribution.
+
+    The two-bin soft label (derived from the known uniform dither distribution)
+    replaces the hard CE label, eliminating label noise while giving partial credit
+    for dynamics predictions in the adjacent correct bin.
+    ddcl_deterministic_targets is False because soft CE computes its own analytic target.
+    """
+
+    quantizer: str = "ddcl"
+    consistency_loss: str = "cross-entropy"
+    ddcl_deterministic_eval: bool = True
+    ddcl_deterministic_targets: bool = False  # soft CE derives targets analytically
+    ddcl_soft_ce_targets: bool = True
+    plan_unc_prop_mode: str = "weighted-avg"
+    ddcl_scale: float = 3.5
+    ddcl_delta: float = 1.0
+    ddcl_lambda: float = 1e-3
+
+
 cs.store(name="ddcl_ce", group="agent", node=DDCLCEConfig)
 cs.store(name="ddcl_mse", group="agent", node=DDCLMSEConfig)
+cs.store(name="ddcl_cosine", group="agent", node=DDCLCosineConfig)
+cs.store(name="ddcl_soft_ce", group="agent", node=DDCLSoftCEConfig)
+
+
+# --- DDCL stochasticity ablation configs ---
+# These four variants systematically ablate det_eval and det_targets for the
+# stochasticity ablation study (Table 2 in the paper).  All use scale=3.5, λ=1e-3.
+
+@dataclass
+class DDCLCEStochConfig(DCMPCConfig):
+    """DDCL CE — fully stochastic: stoch eval + stoch targets.
+    Baseline for the stochasticity ablation (both fixes disabled).
+    """
+    quantizer: str = "ddcl"
+    consistency_loss: str = "cross-entropy"
+    ddcl_deterministic_eval: bool = False
+    ddcl_deterministic_targets: bool = False
+    ddcl_scale: float = 3.5
+    ddcl_lambda: float = 1e-3
+
+
+@dataclass
+class DDCLCEStochEvalConfig(DCMPCConfig):
+    """DDCL CE — stoch eval only: stoch eval + det targets.
+    Isolates the effect of planning-noise from MPPI rollouts.
+    """
+    quantizer: str = "ddcl"
+    consistency_loss: str = "cross-entropy"
+    ddcl_deterministic_eval: bool = False
+    ddcl_deterministic_targets: bool = True
+    ddcl_scale: float = 3.5
+    ddcl_lambda: float = 1e-3
+
+
+@dataclass
+class DDCLCEStochTgtConfig(DCMPCConfig):
+    """DDCL CE — stoch targets only: det eval + stoch targets.
+    Isolates the effect of target-label stochasticity during training.
+    """
+    quantizer: str = "ddcl"
+    consistency_loss: str = "cross-entropy"
+    ddcl_deterministic_eval: bool = True
+    ddcl_deterministic_targets: bool = False
+    ddcl_scale: float = 3.5
+    ddcl_lambda: float = 1e-3
+
+
+@dataclass
+class DDCLCosStochEvalConfig(DCMPCConfig):
+    """DDCL Cosine — stoch eval + det targets.
+    Tests whether planning-noise hurts the cosine objective (cross-check).
+    """
+    quantizer: str = "ddcl"
+    consistency_loss: str = "cosine"
+    ddcl_deterministic_eval: bool = False
+    ddcl_deterministic_targets: bool = True
+    plan_unc_prop_mode: str = "weighted-avg"
+    ddcl_scale: float = 3.5
+    ddcl_lambda: float = 1e-3
+
+
+cs.store(name="ddcl_ce_stoch",      group="agent", node=DDCLCEStochConfig)
+cs.store(name="ddcl_ce_stoch_eval", group="agent", node=DDCLCEStochEvalConfig)
+cs.store(name="ddcl_ce_stoch_tgt",  group="agent", node=DDCLCEStochTgtConfig)
+cs.store(name="ddcl_cos_stoch_eval", group="agent", node=DDCLCosStochEvalConfig)
 
 
 # --- VQ ablations ---
