@@ -68,11 +68,19 @@ def main() -> int:
             print(f"  Skipping run {run.name} (state={run.state})")
             continue
         summary = dict(run.summary or {})
+        # eval.py logs metrics under an "eval/" SummarySubDict.
+        # SummarySubDict is NOT a subclass of dict, so use hasattr check.
+        eval_ns_raw = summary.get("eval/")
+        eval_ns = eval_ns_raw if (eval_ns_raw is not None and hasattr(eval_ns_raw, "get")) else {}
         run_ids.append(run.id)
         print(f"  Run {run.name} (id={run.id}, state={run.state})")
         for metric in METRICS_OF_INTEREST:
-            # Try both slash and dot forms
-            val = summary.get(metric, summary.get(metric.replace("/", "."), None))
+            # Use explicit None checks — do NOT use `or` since 0.0 is falsy.
+            val = eval_ns.get(metric)
+            if val is None:
+                val = summary.get(metric)
+            if val is None:
+                val = summary.get(metric.replace("/", "."))
             if val is not None:
                 try:
                     metric_values[metric].append(float(val))
