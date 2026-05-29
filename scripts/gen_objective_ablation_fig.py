@@ -33,6 +33,8 @@ import numpy as np
 _ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(_ROOT))
 
+PAPER_FIGS = Path(__file__).parent.parent.parent / "DDCL_MBRL_WM_RLC_Workshop" / "Figures"
+
 import matplotlib.pyplot as plt
 from scipy import stats as scipy_stats
 
@@ -163,32 +165,24 @@ def plot_objective_ablation(data: dict, outdir: Path) -> None:
             means.append(float(np.mean(vals)) if vals else 0.0)
             cis.append(_ci95_halfwidth(vals))
 
-        bars = ax.bar(
+        ax.bar(
             x_pos, means,
             color=[PALETTE[m] for m in methods],
             width=0.55,
             yerr=cis,
             capsize=3.0,
-            error_kw={"linewidth": 0.9, "ecolor": "#444444"},
+            error_kw={"linewidth": 0.9, "ecolor": "#333333"},
             zorder=2,
         )
-
-        # Per-seed strip overlay
-        rng = np.random.default_rng(seed=0)
-        for xi, m in enumerate(methods):
-            vals = data[m].get(metric, [])
-            jitter = rng.uniform(-0.12, 0.12, size=len(vals))
-            ax.scatter(
-                xi + jitter, vals,
-                color=PALETTE[m], s=10, alpha=0.65, linewidths=0, zorder=3,
-            )
 
         ax.set_xticks(x_pos)
         ax.set_xticklabels([LABELS[m] for m in methods], rotation=30, ha="right")
         ax.set_xlabel("")
         ax.set_ylabel(ylabel)
-        ax.set_ylim(0, None)
         ax.yaxis.grid(True, alpha=0.3, linewidth=0.5)
+        # Metrics are proportions in [0, 1]; fix axis viewport so error bars
+        # that exceed 1 are clipped at the boundary rather than inflating the range.
+        ax.set_ylim(0, 1.05)
 
     fig.tight_layout(pad=0.8)
 
@@ -196,8 +190,13 @@ def plot_objective_ablation(data: dict, outdir: Path) -> None:
     outdir.mkdir(parents=True, exist_ok=True)
     plt.savefig(outdir / f"{stem}.png", dpi=300, bbox_inches="tight")
     plt.savefig(outdir / f"{stem}.pdf", bbox_inches="tight")
+    # Also save directly to paper Figures/ directory
+    PAPER_FIGS.mkdir(parents=True, exist_ok=True)
+    plt.savefig(PAPER_FIGS / "04_ddcl_objective_ablation.png", dpi=300, bbox_inches="tight")
+    plt.savefig(PAPER_FIGS / "04_ddcl_objective_ablation.pdf", bbox_inches="tight")
     plt.close()
     print(f"  Saved: {outdir / stem}.png / .pdf")
+    print(f"  Saved: {PAPER_FIGS / '04_ddcl_objective_ablation'}.png / .pdf")
 
 
 def print_summary(data: dict) -> None:

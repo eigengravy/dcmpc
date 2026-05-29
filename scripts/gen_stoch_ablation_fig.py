@@ -34,6 +34,8 @@ import numpy as np
 _ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(_ROOT))
 
+PAPER_FIGS = Path(__file__).parent.parent.parent / "DDCL_MBRL_WM_RLC_Workshop" / "Figures"
+
 import matplotlib.pyplot as plt
 from scipy import stats as scipy_stats
 
@@ -156,54 +158,46 @@ def plot_stoch_ablation(data: dict, outdir: Path) -> None:
             means.append(float(np.mean(vals)) if vals else 0.0)
             cis.append(_ci95_halfwidth(vals))
 
-        hatches = ["////"] if any(is_cos) else [None] * len(cond_keys)
         hatches = ["////" if ic else "" for ic in is_cos]
 
-        bars = ax.bar(
+        ax.bar(
             x_pos, means,
             color=[COND_PALETTE[k] for k in cond_keys],
             width=0.55,
             yerr=cis,
             capsize=3.0,
-            error_kw={"linewidth": 0.9, "ecolor": "#444444"},
+            error_kw={"linewidth": 0.9, "ecolor": "#333333"},
             hatch=hatches,
             edgecolor="white",
             linewidth=0.6,
             zorder=2,
         )
 
-        # Per-seed strip overlay
-        rng = np.random.default_rng(seed=42)
-        for xi, key in enumerate(cond_keys):
-            vals = data.get(key, {}).get(metric, [])
-            jitter = rng.uniform(-0.13, 0.13, size=len(vals))
-            ax.scatter(
-                xi + jitter, vals,
-                color=COND_PALETTE[key], s=9, alpha=0.65, linewidths=0, zorder=3,
-            )
-
         ax.set_xticks(x_pos)
         ax.set_xticklabels(cond_labels, fontsize=FONT - 1)
         ax.set_xlabel("")
         ax.set_ylabel(ylabel)
-        ax.set_ylim(0, None)
         ax.yaxis.grid(True, alpha=0.3, linewidth=0.5)
+        # Metrics are proportions in [0, 1]; fix axis viewport.
+        ax.set_ylim(0, 1.05)
 
-        # Annotation: add "(det eval)" / "(stoch eval)" header labels
-        ax.axvline(3.5, color="#888888", lw=0.5, ls="--", alpha=0.6, zorder=1)
+        # Visual divider between CE (left) and Cos (right) conditions
+        ax.axvline(3.5, color="#BBBBBB", lw=0.5, ls="--", alpha=0.6, zorder=1)
 
-    # Custom legend
+    # Custom legend, placed BELOW the figure so it never overlaps the data
     from matplotlib.patches import Patch
     legend_elements = [
-        Patch(facecolor=COND_PALETTE["ddcl_ce_dd"],  label="DDCL-CE (ε=0 eval)"),
-        Patch(facecolor=COND_PALETTE["ddcl_ce_sd"],  label="DDCL-CE (ε~U eval)"),
-        Patch(facecolor=COND_PALETTE["ddcl_ce_ds"],  label="DDCL-CE (stoch tgt)"),
-        Patch(facecolor=COND_PALETTE["ddcl_ce_ss"],  label="DDCL-CE (both stoch)"),
-        Patch(facecolor=COND_PALETTE["ddcl_cos_sd"], label="DDCL-Cos (ε~U eval, det tgt)",
+        Patch(facecolor=COND_PALETTE["ddcl_ce_dd"],  label="CE (ε=0 eval, det tgt)"),
+        Patch(facecolor=COND_PALETTE["ddcl_ce_sd"],  label="CE (ε~U eval, det tgt)"),
+        Patch(facecolor=COND_PALETTE["ddcl_ce_ds"],  label="CE (ε=0 eval, stoch tgt)"),
+        Patch(facecolor=COND_PALETTE["ddcl_ce_ss"],  label="CE (both stoch)"),
+        Patch(facecolor=COND_PALETTE["ddcl_cos_sd"], label="Cos (ε~U eval, det tgt)",
               hatch="////", edgecolor="white"),
     ]
-    axes[1].legend(handles=legend_elements, loc="upper left",
-                   fontsize=FONT - 2, handlelength=1.0)
+    fig.legend(handles=legend_elements, loc="lower center",
+               bbox_to_anchor=(0.5, -0.06),
+               ncol=3, fontsize=FONT - 2, handlelength=1.2,
+               handletextpad=0.5, columnspacing=1.0, frameon=False)
 
     fig.tight_layout(pad=0.8)
 
@@ -211,8 +205,13 @@ def plot_stoch_ablation(data: dict, outdir: Path) -> None:
     outdir.mkdir(parents=True, exist_ok=True)
     plt.savefig(outdir / f"{stem}.png", dpi=300, bbox_inches="tight")
     plt.savefig(outdir / f"{stem}.pdf", bbox_inches="tight")
+    # Also save directly to paper Figures/ directory
+    PAPER_FIGS.mkdir(parents=True, exist_ok=True)
+    plt.savefig(PAPER_FIGS / "05_ddcl_stoch_ablation.png", dpi=300, bbox_inches="tight")
+    plt.savefig(PAPER_FIGS / "05_ddcl_stoch_ablation.pdf", bbox_inches="tight")
     plt.close()
     print(f"  Saved: {outdir / stem}.png / .pdf")
+    print(f"  Saved: {PAPER_FIGS / '05_ddcl_stoch_ablation'}.png / .pdf")
 
 
 def print_summary(data: dict) -> None:

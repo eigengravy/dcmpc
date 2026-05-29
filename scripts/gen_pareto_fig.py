@@ -117,6 +117,35 @@ Y_METRIC = "episodic_precision_success_0p02"
 Y_LABEL  = "Precision success @ 0.02"
 
 
+PAPER_FIGS = Path(__file__).parent.parent.parent / "DDCL_MBRL_WM_RLC_Workshop" / "Figures"
+
+
+def _pareto_mask(xs, ys) -> np.ndarray:
+    """Boolean mask: True if point i is on the upper-left Pareto frontier.
+
+    Upper-left is better: lower x (fewer bits) and higher y (better performance).
+    Point i is dominated if there exists j with x_j ≤ x_i AND y_j ≥ y_i
+    (strict in at least one dimension).  NaN points are never on the frontier.
+    """
+    xs = np.asarray(xs, dtype=float)
+    ys = np.asarray(ys, dtype=float)
+    n = len(xs)
+    mask = np.ones(n, dtype=bool)
+    for i in range(n):
+        if np.isnan(xs[i]) or np.isnan(ys[i]):
+            mask[i] = False
+            continue
+        for j in range(n):
+            if i == j:
+                continue
+            if np.isnan(xs[j]) or np.isnan(ys[j]):
+                continue
+            if xs[j] <= xs[i] and ys[j] >= ys[i] and (xs[j] < xs[i] or ys[j] > ys[i]):
+                mask[i] = False
+                break
+    return mask
+
+
 def _setup_style():
     plt.rcParams.update({
         "figure.dpi": 150, "savefig.dpi": 300,
@@ -203,18 +232,9 @@ def plot_pareto_two_view(pareto: dict, e7: dict, outdir: Path) -> None:
     fig, axes = plt.subplots(1, 2, figsize=(FULL_W, 2.8), sharey=True)
     ax_nominal, ax_realized = axes
 
-    # y-axis limits: determine from all data
-    all_y_vals = []
-    for budget in BUDGETS:
-        for key in budget["ddcl_keys"]:
-            mean, _, _ = get_perf(pareto, "ddcl", key)
-            if not np.isnan(mean):
-                all_y_vals.append(mean)
-        for method_type, key in [("fsq", budget["fsq_key"]), ("vq", budget["vq_key"])]:
-            mean, _, _ = get_perf(pareto, method_type, key)
-            if not np.isnan(mean):
-                all_y_vals.append(mean)
-    y_max = max(all_y_vals) * 1.12 if all_y_vals else 1.0
+    # No y-axis clipping: let matplotlib auto-scale so the full extent of the
+    # 95% CIs is visible. Bits axes use log scale (set below) so the rate range
+    # remains readable even when individual CIs are wide.
 
     # ── Panel A: Nominal capacity ─────────────────────────────────────────────
     for budget in BUDGETS:
@@ -238,7 +258,8 @@ def plot_pareto_two_view(pareto: dict, e7: dict, outdir: Path) -> None:
             )
             ax_nominal.errorbar(
                 ddcl_x, ddcl_y, yerr=ddcl_ci,
-                fmt="none", ecolor=PALETTE["ddcl"], elinewidth=0.7, capsize=2, zorder=3,
+                fmt="none", ecolor=PALETTE["ddcl"], elinewidth=0.7,
+                capsize=2, zorder=3,
             )
 
         # FSQ
@@ -247,7 +268,7 @@ def plot_pareto_two_view(pareto: dict, e7: dict, outdir: Path) -> None:
             ax_nominal.errorbar(
                 nom_bits, fsq_mean, yerr=fsq_ci,
                 fmt=MARKERS["fsq"], color=PALETTE["fsq"],
-                markersize=8, markeredgewidth=0.5,
+                markersize=8, markeredgewidth=0,
                 elinewidth=0.8, capsize=2, zorder=4,
             )
 
@@ -257,21 +278,49 @@ def plot_pareto_two_view(pareto: dict, e7: dict, outdir: Path) -> None:
             ax_nominal.errorbar(
                 nom_bits, vq_mean, yerr=vq_ci,
                 fmt=MARKERS["vq"], color=PALETTE["vq"],
-                markersize=8, markeredgewidth=0.5,
+                markersize=8, markeredgewidth=0,
                 elinewidth=0.8, capsize=2, zorder=4,
             )
 
-    ax_nominal.set_xlabel("Nominal capacity (bits)")
+    # ── Panel A: Pareto frontier highlights ──────────────────────────────────
+    # Collect all plotted mean points per budget, find best-y (= frontier at fixed x)
+    for budget in BUDGETS:
+        nom_bits = budget["bits"]
+        cands_x, cands_y, cands_color, cands_marker = [], [], [], []
+
+        for key in budget["ddcl_keys"]:
+            mean, _, _ = get_perf(pareto, "ddcl", key)
+            if not np.isnan(mean):
+                cands_x.append(nom_bits)
+                cands_y.append(mean)
+                cands_color.append(PALETTE["ddcl"])
+                cands_marker.append(MARKERS["ddcl"])
+
+        for mt, mk in [("fsq", budget["fsq_key"]), ("vq", budget["vq_key"])]:
+            mean, _, _ = get_perf(pareto, mt, mk)
+            if not np.isnan(mean):
+                cands_x.append(nom_bits)
+                cands_y.append(mean)
+                cands_color.append(PALETTE[mt])
+                cands_marker.append(MARKERS[mt])
+
+        _S_IN = 50; _S_OUT = 110  # double-scatter ring: outer black, inner coloured
+        frontier = _pareto_mask(cands_x, cands_y)
+        for xi, yi, col, mkr, on_f in zip(cands_x, cands_y, cands_color, cands_marker, frontier):
+            if on_f:
+                ax_nominal.scatter(xi, yi, marker=mkr, color="black",
+                                   s=_S_OUT, linewidths=0, zorder=5)
+                ax_nominal.scatter(xi, yi, marker=mkr, color=col,
+                                   s=_S_IN, linewidths=0, zorder=6)
+
+    ax_nominal.set_xscale("log")
+    ax_nominal.set_xlabel("Nominal capacity (bits, log scale)")
     ax_nominal.set_ylabel(Y_LABEL)
-    ax_nominal.set_xlim(200, 430)
-    ax_nominal.set_ylim(0, y_max)
     ax_nominal.set_title("(A) Equal nominal budget", fontsize=FONT, pad=3)
 
     # Budget level markers
     for budget in BUDGETS:
         ax_nominal.axvline(budget["bits"], color="#AAAAAA", lw=0.7, ls=":", alpha=0.7, zorder=1)
-        ax_nominal.text(budget["bits"] + 4, 0.02, f"{budget['bits']:.0f} b",
-                        fontsize=FONT - 2, color="#777777", va="bottom")
 
     # ── Panel B: Realized rate on D_ref ───────────────────────────────────────
     for budget in BUDGETS:
@@ -299,9 +348,11 @@ def plot_pareto_two_view(pareto: dict, e7: dict, outdir: Path) -> None:
             ax_realized.scatter(ddcl_x, ddcl_y, color=PALETTE["ddcl"],
                                 marker=MARKERS["ddcl"], s=30, alpha=0.7,
                                 linewidths=0.4, zorder=3)
-            ax_realized.errorbar(ddcl_x, ddcl_y, yerr=ddcl_ci,
-                                 fmt="none", ecolor=PALETTE["ddcl"],
-                                 elinewidth=0.7, capsize=2, zorder=3)
+            ax_realized.errorbar(
+                ddcl_x, ddcl_y, yerr=ddcl_ci,
+                fmt="none", ecolor=PALETTE["ddcl"], elinewidth=0.7,
+                capsize=2, zorder=3,
+            )
 
         # FSQ
         fsq_mean, fsq_ci, _ = get_perf(pareto, "fsq", budget["fsq_key"])
@@ -310,7 +361,7 @@ def plot_pareto_two_view(pareto: dict, e7: dict, outdir: Path) -> None:
             ax_realized.errorbar(
                 fsq_bits, fsq_mean, yerr=fsq_ci,
                 fmt=MARKERS["fsq"], color=PALETTE["fsq"],
-                markersize=8, markeredgewidth=0.5,
+                markersize=8, markeredgewidth=0,
                 elinewidth=0.8, capsize=2, zorder=4,
             )
 
@@ -321,17 +372,50 @@ def plot_pareto_two_view(pareto: dict, e7: dict, outdir: Path) -> None:
             ax_realized.errorbar(
                 vq_bits, vq_mean, yerr=vq_ci,
                 fmt=MARKERS["vq"], color=PALETTE["vq"],
-                markersize=8, markeredgewidth=0.5,
+                markersize=8, markeredgewidth=0,
                 elinewidth=0.8, capsize=2, zorder=4,
             )
 
-    ax_realized.set_xlabel("Realized code entropy on D_ref (bits/transition)")
+    # ── Panel B: Pareto frontier highlights ──────────────────────────────────
+    all_bx, all_by, all_bc, all_bm = [], [], [], []
+    for budget in BUDGETS:
+        for pareto_key, e7_key in budget["e7_ddcl_keys"].items():
+            mean, _, _ = get_perf(pareto, "ddcl", pareto_key)
+            bits = get_rate_e7(e7, e7_key, budget["bits"])
+            if not np.isnan(mean) and not np.isnan(bits):
+                all_bx.append(bits); all_by.append(mean)
+                all_bc.append(PALETTE["ddcl"]); all_bm.append(MARKERS["ddcl"])
+
+        for mt, pk, ek in [("fsq", budget["fsq_key"], budget["e7_fsq_key"]),
+                            ("vq",  budget["vq_key"],  budget["e7_vq_key"])]:
+            mean, _, _ = get_perf(pareto, mt, pk)
+            bits = get_rate_e7(e7, ek, budget["bits"])
+            if not np.isnan(mean) and not np.isnan(bits):
+                all_bx.append(bits); all_by.append(mean)
+                all_bc.append(PALETTE[mt]); all_bm.append(MARKERS[mt])
+
+    _S_IN_B = 50; _S_OUT_B = 110
+    frontier_b = _pareto_mask(all_bx, all_by)
+    for xi, yi, col, mkr, on_f in zip(all_bx, all_by, all_bc, all_bm, frontier_b):
+        if on_f:
+            ax_realized.scatter(xi, yi, marker=mkr, color="black",
+                                s=_S_OUT_B, linewidths=0, zorder=5)
+            ax_realized.scatter(xi, yi, marker=mkr, color=col,
+                                s=_S_IN_B, linewidths=0, zorder=6)
+
+    ax_realized.set_xscale("log")
+    ax_realized.set_xlabel("Realized code entropy on D_ref (bits/transition, log scale)")
     ax_realized.set_title("(B) Realized rate (shared probe set)", fontsize=FONT, pad=3)
-    ax_realized.set_ylim(0, y_max)
 
     # Budget level markers (realized rate positions roughly)
     for budget in BUDGETS:
         ax_realized.axvline(budget["bits"], color="#AAAAAA", lw=0.7, ls=":", alpha=0.5, zorder=1)
+
+    # Precision success is a proportion in [0, 1].  Set axis viewport to [0, 1.05]
+    # so that error bars extending beyond 1 are clipped at the axis edge rather
+    # than inflating the y-axis range.  The CI values themselves are not altered.
+    ax_nominal.set_ylim(0, 1.05)
+    ax_realized.set_ylim(0, 1.05)
 
     # Shared legend on Panel A
     legend_handles = [
@@ -351,8 +435,13 @@ def plot_pareto_two_view(pareto: dict, e7: dict, outdir: Path) -> None:
     outdir.mkdir(parents=True, exist_ok=True)
     plt.savefig(outdir / f"{stem}.png", dpi=300, bbox_inches="tight")
     plt.savefig(outdir / f"{stem}.pdf", bbox_inches="tight")
+    # Also write directly to paper Figures/ so Overleaf picks it up immediately
+    PAPER_FIGS.mkdir(parents=True, exist_ok=True)
+    plt.savefig(PAPER_FIGS / "03_toy_rate_precision_tradeoff.png", dpi=300, bbox_inches="tight")
+    plt.savefig(PAPER_FIGS / "03_toy_rate_precision_tradeoff.pdf", bbox_inches="tight")
     plt.close()
     print(f"  Saved: {outdir / stem}.png / .pdf")
+    print(f"  Saved: {PAPER_FIGS / '03_toy_rate_precision_tradeoff'}.png / .pdf")
 
 
 def print_summary(pareto: dict, e7: dict) -> None:
