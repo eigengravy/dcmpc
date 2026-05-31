@@ -97,9 +97,8 @@ class MetricInvariantTests(unittest.TestCase):
 
     def test_ddcl_deterministic_quantization_is_repeatable(self):
         quantizer = DDCLQuantizer(
-            n_dims=2,
-            delta=1.0,
-            scale=2.0,
+            deltas=[0.4, 0.4],
+            scales=[0.8, 0.8],
             ddcl_lambda=1e-3,
         )
         z = torch.tensor([[0.2, -0.7, 1.2, -1.8]], dtype=torch.float32)

@@ -219,8 +219,6 @@ class DDCLSoftCEConfig(DCMPCConfig):
     ddcl_deterministic_targets: bool = False  # soft CE derives targets analytically
     ddcl_soft_ce_targets: bool = True
     plan_unc_prop_mode: str = "weighted-avg"
-    ddcl_scale: float = 3.5
-    ddcl_delta: float = 1.0
     ddcl_lambda: float = 1e-3
 
 
@@ -243,7 +241,6 @@ class DDCLCEStochConfig(DCMPCConfig):
     consistency_loss: str = "cross-entropy"
     ddcl_deterministic_eval: bool = False
     ddcl_deterministic_targets: bool = False
-    ddcl_scale: float = 3.5
     ddcl_lambda: float = 1e-3
 
 
@@ -256,7 +253,6 @@ class DDCLCEStochEvalConfig(DCMPCConfig):
     consistency_loss: str = "cross-entropy"
     ddcl_deterministic_eval: bool = False
     ddcl_deterministic_targets: bool = True
-    ddcl_scale: float = 3.5
     ddcl_lambda: float = 1e-3
 
 
@@ -269,7 +265,6 @@ class DDCLCEStochTgtConfig(DCMPCConfig):
     consistency_loss: str = "cross-entropy"
     ddcl_deterministic_eval: bool = True
     ddcl_deterministic_targets: bool = False
-    ddcl_scale: float = 3.5
     ddcl_lambda: float = 1e-3
 
 
@@ -283,7 +278,6 @@ class DDCLCosStochEvalConfig(DCMPCConfig):
     ddcl_deterministic_eval: bool = False
     ddcl_deterministic_targets: bool = True
     plan_unc_prop_mode: str = "weighted-avg"
-    ddcl_scale: float = 3.5
     ddcl_lambda: float = 1e-3
 
 

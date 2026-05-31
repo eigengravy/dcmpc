@@ -75,9 +75,13 @@ class FSQ(_FSQ):
 class DDCLQuantizer(nn.Module):
     """
     DDCL (Differentiable Discrete Communication Learning) quantizer
-    adapted for 1D latent vectors.
+    with per-channel delta/scale support for capacity-matched comparisons.
 
-    Uses tanh bounding, uniform dithering, floor quantization, and STE.
+    Uses tanh bounding, uniform dithering, shifted floor quantization
+    m = floor((z_prime + 1) / delta) on the interval [-1, 1), and STE.
+    Overflow is prevented by setting scale = 1 - delta/2, which constrains
+    z_prime to (-1, 1) so the floor always lands in {0, ..., L-1}.
+
     Matches FSQ's interface so it can be swapped in as self._quantizer.
 
     Reference: https://arxiv.org/abs/2511.01554
@@ -85,32 +89,52 @@ class DDCLQuantizer(nn.Module):
 
     def __init__(
         self,
-        n_dims: int = 2,
-        delta: float = 1.0,
-        scale: float = 3.5,
-        ddcl_lambda: float = 1,
+        deltas: List[float],
+        scales: List[float],
+        ddcl_lambda: float = 1e-3,
     ):
         super().__init__()
-        self.n_dims = n_dims
-        self.num_channels = n_dims
-        self.delta = delta
-        self.scale = scale
+        if len(deltas) != len(scales):
+            raise ValueError(
+                f"deltas and scales must have same length, "
+                f"got {len(deltas)} and {len(scales)}"
+            )
+        self.num_channels = len(deltas)
         self.ddcl_lambda = ddcl_lambda
 
-        half_delta = delta / 2.0
-        min_m = math.floor((-scale - half_delta) / delta)
-        max_m = math.floor((scale + half_delta) / delta)
-        self.n_levels = max_m - min_m + 1
-        self._codebook_size = self.n_levels**n_dims
-        self.min_m = min_m
+        # Per-channel levels: L = round(2 / delta)
+        n_levels_list = [round(2.0 / d) for d in deltas]
+        self._n_levels_per_ch = n_levels_list
+        self._codebook_size = math.prod(n_levels_list)
 
-        offsets = [self.n_levels ** (n_dims - 1 - i) for i in range(n_dims)]
+        # Mixed-radix offsets: offsets[i] = prod(n_levels[i+1:])
+        offsets = []
+        for i in range(self.num_channels):
+            offsets.append(math.prod(n_levels_list[i + 1 :]))
         self.register_buffer("_offsets", torch.tensor(offsets, dtype=torch.long))
 
-        centers = torch.tensor(
-            [delta * (m + 0.5) for m in range(min_m, min_m + self.n_levels)]
+        # Register per-channel deltas and scales as buffers for device tracking
+        self.register_buffer(
+            "deltas", torch.tensor(deltas, dtype=torch.float32)
         )
-        grids = torch.meshgrid(*([centers] * n_dims), indexing="ij")
+        self.register_buffer(
+            "scales", torch.tensor(scales, dtype=torch.float32)
+        )
+        self.register_buffer(
+            "n_levels_per_ch",
+            torch.tensor(n_levels_list, dtype=torch.long),
+        )
+
+        # Build implicit codebook via meshgrid over per-channel centers
+        # Centers for channel i: -1 + (m + 0.5) * delta_i, m in [0, L_i)
+        center_lists = []
+        for i, (d, L) in enumerate(zip(deltas, n_levels_list)):
+            centers_i = torch.tensor(
+                [-1.0 + (m + 0.5) * d for m in range(L)]
+            )
+            center_lists.append(centers_i)
+
+        grids = torch.meshgrid(*center_lists, indexing="ij")
         codebook = torch.stack([g.flatten() for g in grids], dim=-1)
         self.register_buffer("_implicit_codebook", codebook)
 
@@ -126,29 +150,35 @@ class DDCLQuantizer(nn.Module):
         shp = z.shape
         z = z.view(*shp[:-1], -1, self.num_channels)
 
-        z_bounded = self.scale * torch.tanh(z)
+        # Per-channel scale: deltas/scales broadcast over [..., num_channels]
+        z_bounded = self.scales * torch.tanh(z)
 
         if stochastic:
-            epsilon = (torch.rand_like(z_bounded) - 0.5) * self.delta
+            epsilon = (torch.rand_like(z_bounded) - 0.5) * self.deltas
         else:
             epsilon = torch.zeros_like(z_bounded)
+
         z_prime = z_bounded + epsilon
-        m = torch.floor(z_prime / self.delta)
-        c_m = self.delta * (m + 0.5)
+
+        # Shifted floor quantization into [0, L) per channel
+        m = torch.floor((z_prime + 1.0) / self.deltas)
+
+        # Bin centers in [-1, 1) space
+        c_m = -1.0 + (m + 0.5) * self.deltas
+
+        # Dither cancellation: z_hat = c_m - epsilon
         z_hat = c_m - epsilon
+
+        # STE: forward uses z_hat, backward uses z_bounded
         z_approx = z_bounded + (z_hat - z_bounded).detach()
 
-        # Unsigned rate formula: log₂(|z|/δ + 1), matching the DDCL paper
-        # (Runge et al., 2024). This penalises the magnitude of z_bounded,
-        # yielding 0 bits at |z|=0 and growing logarithmically with precision.
-        # The logged metric (rate/allocated_bits_per_transition in dcmpc.py)
-        # now uses the same unsigned formula (corrected 2026-05-21).
+        # Per-channel comm loss: log₂(|z_bounded| / delta + 1)
         comm_loss = self.ddcl_lambda * torch.log2(
-            z_bounded.abs() / self.delta + 1.0
+            z_bounded.abs() / self.deltas + 1.0
         ).mean()
 
-        m_shifted = m.long() - self.min_m
-        indices = (m_shifted * self._offsets).sum(dim=-1)
+        # Mixed-radix joint index
+        indices = (m.long() * self._offsets).sum(dim=-1)
 
         codes = z_approx.flatten(-2)
         return {
@@ -161,8 +191,9 @@ class DDCLQuantizer(nn.Module):
 
     def __repr__(self):
         return (
-            f"DDCLQuantizer(n_dims={self.n_dims}, delta={self.delta}, "
-            f"scale={self.scale}, n_levels={self.n_levels}, "
+            f"DDCLQuantizer(deltas={self.deltas.tolist()}, "
+            f"scales={self.scales.tolist()}, "
+            f"n_levels_per_ch={self._n_levels_per_ch}, "
             f"codebook_size={self.codebook_size})"
         )
 

@@ -79,12 +79,10 @@ class DCMPCConfig:
     vq_codebook_size: int = 15
     """VQ codebook dimension (dimension of each code vector)"""
     vq_codebook_dim: int = 2
-    """DDCL number of quantized dimensions per group"""
-    ddcl_n_dims: int = 2
-    """DDCL quantization bin width"""
-    ddcl_delta: float = 1.0
-    """DDCL tanh pre-scaling factor"""
-    ddcl_scale: float = 3.5
+    """DDCL per-channel bin widths (delta=2/L for L levels). Length determines num_channels."""
+    ddcl_deltas: List[float] = field(default_factory=lambda: [0.4, 2/3])
+    """DDCL per-channel tanh pre-scaling (scale=1-delta/2 for overflow prevention)."""
+    ddcl_scales: List[float] = field(default_factory=lambda: [0.8, 2/3])
     """DDCL communication cost weight"""
     ddcl_lambda: float = 1e-3
     """Use deterministic DDCL quantization when selecting/evaluating actions"""
@@ -211,15 +209,14 @@ class WorldModel(nn.Module):
             self.enc_latent_dim = self.org_latent_dim * self.num_channels
             self.cfg.latent_dim *= self.num_channels
         elif cfg.quantizer == "ddcl":
-            self.num_channels = cfg.ddcl_n_dims
+            self.num_channels = len(cfg.ddcl_deltas)
             if cfg.latent_dim % self.num_channels != 0:
                 raise ValueError(
-                    "latent_dim must be divisible by ddcl_n_dims"
+                    "latent_dim must be divisible by len(ddcl_deltas)"
                 )
             self._quantizer = DDCLQuantizer(
-                n_dims=cfg.ddcl_n_dims,
-                delta=cfg.ddcl_delta,
-                scale=cfg.ddcl_scale,
+                deltas=list(cfg.ddcl_deltas),
+                scales=list(cfg.ddcl_scales),
                 ddcl_lambda=cfg.ddcl_lambda,
             )
             self.enc_latent_dim = self.org_latent_dim * self.num_channels
@@ -505,26 +502,27 @@ class WorldModel(nn.Module):
                     and self.cfg.ce_logits_mode == "standard"
                 ):
                     # Compute analytically exact soft CE targets from DDCL dither distribution.
-                    # z_bounded_tar: [batch, groups, n_dims] — deterministic target encoding
+                    # z_bounded_tar: [batch, groups, num_channels] — deterministic target encoding
                     z_bounded_tar = (
-                        self._quantizer.scale * torch.tanh(zs_tar["z"])
-                    ).float()  # [batch, groups, n_dims]
+                        self._quantizer.scales * torch.tanh(zs_tar["z"])
+                    ).float()  # [batch, groups, num_channels]
+                    # Shifted floor: m = floor((z + 1) / delta), in [0, L)
                     m_det = torch.floor(
-                        z_bounded_tar / self._quantizer.delta
-                    ).long()  # bin index
-                    f = z_bounded_tar / self._quantizer.delta - m_det.float()  # frac ∈ [0,1)
+                        (z_bounded_tar + 1.0) / self._quantizer.deltas
+                    ).long()
+                    f = (z_bounded_tar + 1.0) / self._quantizer.deltas - m_det.float()  # frac ∈ [0,1)
 
                     m_adj = torch.where(f < 0.5, m_det - 1, m_det + 1)
                     p_det = torch.where(f < 0.5, 0.5 + f, 1.5 - f)
                     p_adj = 1.0 - p_det
 
-                    n_levels = self._quantizer.n_levels
-                    min_m = self._quantizer.min_m
-                    # Clamp to valid bin range. At boundary bins, m_adj may equal m_det
-                    # after clamping; scatter_add_ correctly accumulates total probability
-                    # (p_det + p_adj = 1.0) into the boundary bin.
-                    m_det_shifted = (m_det - min_m).clamp(0, n_levels - 1)
-                    m_adj_shifted = (m_adj - min_m).clamp(0, n_levels - 1)
+                    n_levels_per_ch = self._quantizer.n_levels_per_ch  # [num_channels] long
+                    # m_det is always in [0, L-1] (no overflow by construction).
+                    # m_adj can be -1 or L at grid boundaries — clamp it so
+                    # scatter_add_ folds that probability into the boundary bin.
+                    max_bin = (n_levels_per_ch - 1)[None, None, None, :]
+                    m_det_shifted = m_det
+                    m_adj_shifted = torch.clamp(m_adj, min=0).min(max_bin)
 
                     # Joint soft label over the full group codebook (n_levels^n_dims entries).
                     #
@@ -544,8 +542,8 @@ class WorldModel(nn.Module):
                     # _offsets:                     [n_dims]  mixed-radix weights
                     #   offsets[i] = n_levels^(n_dims-1-i), so
                     #   joint_index = Σ_i  m_shifted_i * offsets[i]
-                    n_dims_q = self._quantizer.n_dims
-                    codebook_size = self._quantizer.codebook_size  # n_levels^n_dims
+                    n_dims_q = self._quantizer.num_channels
+                    codebook_size = self._quantizer.codebook_size  # prod(n_levels_per_ch)
                     offsets = self._quantizer._offsets  # [n_dims], long buffer
 
                     # Stack per-dim candidates along a new leading axis:
@@ -664,10 +662,10 @@ class WorldModel(nn.Module):
 
             # DDCL-specific: comms bits (info rate without lambda weighting)
             if isinstance(self._quantizer, DDCLQuantizer):
-                z_bounded = self._quantizer.scale * torch.tanh(z["z"])
-                comms_bits = torch.log2(z_bounded.abs() / self._quantizer.delta + 1.0)
+                z_bounded = self._quantizer.scales * torch.tanh(z["z"])
+                comms_bits = torch.log2(z_bounded.abs() / self._quantizer.deltas + 1.0)
                 signed_comms_bits = torch.log2(
-                    2.0 * z_bounded.abs() / self._quantizer.delta + 1.0
+                    2.0 * z_bounded.abs() / self._quantizer.deltas + 1.0
                 )
                 metrics.update(
                     {
@@ -697,16 +695,11 @@ class WorldModel(nn.Module):
         empirical_entropy_bits = self._empirical_entropy_bits(indices, codebook_size)
 
         if isinstance(self._quantizer, DDCLQuantizer):
-            z_bounded = self._quantizer.scale * torch.tanh(z["z"])
+            z_bounded = self._quantizer.scales * torch.tanh(z["z"])
             # Use the *unsigned* formula log₂(|z|/δ + 1), which matches the DDCL
             # paper (Runge et al., 2024) and the training comm_loss in layers.py.
-            # A previous version of this metric used log₂(2|z|/δ + 1) (signed),
-            # which inflates reported bits by ~36% at typical operating magnitudes.
-            # Corrected 2026-05-21. All DDCL runs before this date have the inflated
-            # value logged to W&B; use rate/ddcl_loss_bits_per_dim × n_total_dims
-            # to recover the correct value from those historical runs.
             allocated_bits = torch.log2(
-                z_bounded.abs() / self._quantizer.delta + 1.0
+                z_bounded.abs() / self._quantizer.deltas + 1.0
             ).sum(dim=(-2, -1))
             allocated_bits_per_transition = allocated_bits.mean().item()
         else:
@@ -839,8 +832,8 @@ class WorldModel(nn.Module):
     ) -> Tuple[Optional[torch.Tensor], Optional[List[int]]]:
         if isinstance(self._quantizer, DDCLQuantizer):
             shifted = tokens.unsqueeze(-1) // self._quantizer._offsets.long()
-            shifted = shifted % self._quantizer.n_levels
-            return shifted, [self._quantizer.n_levels] * self._quantizer.n_dims
+            shifted = shifted % self._quantizer.n_levels_per_ch
+            return shifted, self._quantizer._n_levels_per_ch
 
         if isinstance(self._quantizer, FSQ):
             levels = torch.tensor(
