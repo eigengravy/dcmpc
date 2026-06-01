@@ -11,6 +11,9 @@ __pycache__/
 venv/
 .python_history
 
+# Local project structure doc (contains private directory details).
+.project_structure.md
+
 # Local/private research planning and experiment bookkeeping.
 # These files are intentionally kept out of GitHub because they may contain
 # speculative paper strategy, failed runs, cluster paths, W&B links, and notes.

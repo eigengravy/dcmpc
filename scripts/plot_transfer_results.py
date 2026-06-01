@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import statistics
 import sys
@@ -49,10 +50,26 @@ FONT   = 8      # body text pt
 C_FSQ  = "#4477AA"   # blue
 C_VQ   = "#66CCEE"   # cyan
 C_DDCL = "#332288"   # indigo
+C_DDCL_CE = "#EE6677"  # red
+C_DDCL_MSE = "#228833" # green
 
-METHOD_COLORS  = {"FSQ-CE": C_FSQ, "VQ-CE": C_VQ, "DDCL-Cos": C_DDCL}
-METHOD_MARKERS = {"FSQ-CE": "^",   "VQ-CE": "v",  "DDCL-Cos": "*"}
-METHOD_ORDER   = ["FSQ-CE", "VQ-CE", "DDCL-Cos"]
+METHOD_COLORS  = {
+    "FSQ-CE": C_FSQ,
+    "VQ-CE": C_VQ,
+    "DDCL-Cos": C_DDCL,
+    "DDCL-CE(s,d)": C_DDCL_CE,
+    "DDCL-CE(d,d)": "#AA3377",
+    "DDCL-MSE": C_DDCL_MSE,
+}
+METHOD_MARKERS = {
+    "FSQ-CE": "^",
+    "VQ-CE": "v",
+    "DDCL-Cos": "*",
+    "DDCL-CE(s,d)": "o",
+    "DDCL-CE(d,d)": "s",
+    "DDCL-MSE": "X",
+}
+METHOD_ORDER   = ["FSQ-CE", "VQ-CE", "DDCL-Cos", "DDCL-CE(s,d)"]
 
 # ── Environment display names & ordering ─────────────────────────────────────
 ENV_KEYS    = ["walker/walk", "reacher/hard", "dog/run", "humanoid/walk", "mw-button-press"]
@@ -62,11 +79,50 @@ MAX_RETURN  = 1000   # DMControl episode length → normalise raw return
 # ── Best lambda per environment (from sweep analysis) ────────────────────────
 BEST_LAMBDA = {
     "walker/walk":    0.001,
-    "reacher/hard":   0.01,
+    "reacher/hard":   0.001,
     "dog/run":        0.001,
     "humanoid/walk":  0.01,
-    "mw-button-press": 0.01,
+    "mw-button-press": 0.001,
 }
+
+PAPER_EXPECTED_SEEDS = [1, 2, 3, 4, 5]
+PAPER_PROTOCOL_BY_METHOD = {
+    "DDCL-Cos": "stable",
+    "DDCL-CE(s,d)": "default",
+    "FSQ-CE": "default",
+    "VQ-CE": "default",
+}
+
+
+def infer_protocol(tags: list[str], name: str, cfg: dict) -> str:
+    raw = cfg.get("protocol")
+    if isinstance(raw, str) and raw:
+        return raw
+    for tag in tags:
+        if tag.startswith("protocol="):
+            return tag.split("=", 1)[1]
+    name_l = name.lower()
+    if "-stable-" in name_l or name_l.endswith("-stable"):
+        return "stable"
+    if "-default-" in name_l or name_l.endswith("-default"):
+        return "default"
+    return "unspecified"
+
+
+def lambda_is(value, target: float) -> bool:
+    try:
+        return math.isclose(float(value), target, rel_tol=0.0, abs_tol=1e-12)
+    except (TypeError, ValueError):
+        return False
+
+
+def protocol_matches(record: dict, preferred: str) -> bool:
+    protocol = record.get("protocol")
+    if protocol == preferred:
+        return True
+    if record.get("quantizer") in {"fsq", "vq"} and protocol == "unspecified" and preferred == "default":
+        return True
+    return False
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -77,7 +133,7 @@ def fetch_runs() -> list[dict]:
     """Pull all finished runs from the dcmpc W&B project via GraphQL."""
     query = """{
       project(entityName:"%s", name:"%s"){
-        runs(first:200){edges{node{name state config summaryMetrics}}}
+        runs(first:200){edges{node{name state tags config summaryMetrics}}}
       }
     }""" % (ENTITY, PROJECT)
     resp = requests.post(
@@ -102,6 +158,10 @@ def parse_runs(edges: list[dict]) -> list[dict]:
         node  = edge["node"]
         if node["state"] != "finished":
             continue
+        tags = node.get("tags") or []
+        if "archive" in tags:
+            continue
+        name = node["name"]
         cfg = json.loads(node.get("config", "{}") or "{}")
         sm  = json.loads(node.get("summaryMetrics", "{}") or "{}")
 
@@ -117,13 +177,13 @@ def parse_runs(edges: list[dict]) -> list[dict]:
             agent = agent["value"]
         quantizer = agent.get("quantizer", "?") if isinstance(agent, dict) else "?"
         lam       = agent.get("ddcl_lambda", None) if isinstance(agent, dict) else None
+        loss      = agent.get("consistency_loss", None) if isinstance(agent, dict) else None
+        det_eval  = agent.get("ddcl_deterministic_eval", None) if isinstance(agent, dict) else None
+        det_tgt   = agent.get("ddcl_deterministic_targets", None) if isinstance(agent, dict) else None
 
-        # prefer eval_best/, fall back to eval/
-        eb  = sm.get("eval_best/", {}) or {}
-        ev  = sm.get("eval/",      {}) or {}
-        src = "best" if (eb.get("normalized_return") or eb.get("episodic_success")
-                         or eb.get("episodic_return")) else "final"
-        d   = eb if src == "best" else ev
+        # Paper transfer tables use final-checkpoint eval/ for uniformity.
+        d   = sm.get("eval/", {}) or {}
+        src = "final"
 
         # Performance
         nr  = d.get("normalized_return")
@@ -135,6 +195,7 @@ def parse_runs(edges: list[dict]) -> list[dict]:
 
         # Rate metrics
         alloc_bits = d.get("rate/allocated_bits_per_transition")
+        emp_bits   = d.get("rate/empirical_entropy_bits_per_transition")
         usage_pct  = d.get("codebook/usage_percent")
         nom_bits   = d.get("rate/max_bits_per_transition")
 
@@ -144,20 +205,35 @@ def parse_runs(edges: list[dict]) -> list[dict]:
         elif quantizer == "vq":
             method = "VQ-CE"
         elif quantizer == "ddcl":
-            method = "DDCL-Cos"
+            if loss == "cosine":
+                method = "DDCL-Cos"
+            elif loss == "mse":
+                method = "DDCL-MSE"
+            elif loss == "cross-entropy":
+                ev_flag = "s" if det_eval is False else "d"
+                tg_flag = "s" if det_tgt is False else "d"
+                method = f"DDCL-CE({ev_flag},{tg_flag})"
+            else:
+                method = "DDCL"
         else:
             continue
 
         records.append(dict(
             env=env_key, method=method, lam=lam, seed=seed,
+            protocol=infer_protocol(tags, name, cfg), quantizer=quantizer,
             nr=nr, suc=suc, alloc_bits=alloc_bits,
-            nom_bits=nom_bits, usage_pct=usage_pct, src=src,
+            emp_bits=emp_bits, nom_bits=nom_bits, usage_pct=usage_pct, src=src,
         ))
     return records
 
 
 def select_best_ddcl(records: list[dict]) -> list[dict]:
-    """For DDCL, keep only the best-lambda seeds per env; keep all FSQ/VQ seeds."""
+    """Optional best-lambda view.
+
+    Do not use this for fixed-protocol paper tables. If used, the resulting
+    figures/tables must be labelled DDCL-Cos(best lambda) and show the selected
+    lambda per environment.
+    """
     out = []
     for r in records:
         if r["method"] != "DDCL-Cos":
@@ -167,15 +243,47 @@ def select_best_ddcl(records: list[dict]) -> list[dict]:
     return out
 
 
+def select_fixed_protocol(records: list[dict], fixed_lambda: float = 1e-3) -> list[dict]:
+    """Paper-table/plot selection: fixed lambda and one planned run per seed."""
+    selected = []
+    for env in ENV_KEYS:
+        for method in METHOD_ORDER:
+            preferred_protocol = PAPER_PROTOCOL_BY_METHOD.get(method)
+            if preferred_protocol is None:
+                continue
+            candidates = [
+                r for r in records
+                if r["env"] == env
+                and r["method"] == method
+                and r.get("seed") in PAPER_EXPECTED_SEEDS
+                and lambda_is(r.get("lam"), fixed_lambda)
+                and protocol_matches(r, preferred_protocol)
+            ]
+            by_seed = {}
+            for record in candidates:
+                by_seed.setdefault(record["seed"], []).append(record)
+            for seed in PAPER_EXPECTED_SEEDS:
+                seed_records = by_seed.get(seed, [])
+                if not seed_records:
+                    continue
+                selected.append(sorted(seed_records, key=lambda r: str(r.get("seed", "")))[0])
+    return selected
+
+
 def group_perf(records: list[dict]) -> dict:
-    """Return {(env, method): {"nr": [...], "suc": [...], "bits": [...], "usage": [...]}}."""
+    """Return {(env, method): {"nr": [...], "suc": [...], "bits": [...], "usage": [...]}}.
+
+    ``bits`` is eval empirical entropy, the only rate axis this transfer script
+    should use. Allocated bits are DDCL-only diagnostics and are not comparable
+    to FSQ/VQ.
+    """
     from collections import defaultdict
     g: dict = defaultdict(lambda: {"nr": [], "suc": [], "bits": [], "usage": []})
     for r in records:
         key = (r["env"], r["method"])
         if r["nr"]        is not None: g[key]["nr"].append(r["nr"])
         if r["suc"]       is not None: g[key]["suc"].append(r["suc"])
-        if r["alloc_bits"] is not None: g[key]["bits"].append(r["alloc_bits"])
+        if r.get("emp_bits") is not None: g[key]["bits"].append(r["emp_bits"])
         if r["usage_pct"] is not None:  g[key]["usage"].append(r["usage_pct"])
     return dict(g)
 
@@ -267,7 +375,7 @@ def savefig(outdir: Path, stem: str) -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def plot_transfer_performance(groups: dict, outdir: Path) -> None:
-    """5 subplots (one per env), 3 grouped bars (FSQ / VQ / DDCL-best-λ).
+    """5 subplots (one per env), grouped bars for fixed-protocol methods.
 
     Primary metric: normalised return (success for button-press, mapped to [0,1]).
     Error bars: 95% CI (t-distribution).  Individual seeds shown as strip dots.
@@ -295,7 +403,7 @@ def plot_transfer_performance(groups: dict, outdir: Path) -> None:
                    ecolor="#333333")
 
         ax.set_xticks(x_pos)
-        ax.set_xticklabels(["FSQ", "VQ", "DDCL"], fontsize=FONT - 1)
+        ax.set_xticklabels(["FSQ", "VQ", "Cos", "CE"], fontsize=FONT - 1)
         ax.set_title(env_lbl, fontsize=FONT, pad=3)
         ax.set_ylim(0, 1.09)
         ax.set_xlim(-0.6, 2.6)
@@ -305,8 +413,8 @@ def plot_transfer_performance(groups: dict, outdir: Path) -> None:
         ax.yaxis.set_minor_locator(plt.MultipleLocator(0.1))
 
     # shared legend below panels (avoids overlap with env titles)
-    patches = [mpatches.Patch(color=c, label=m)
-               for m, c in METHOD_COLORS.items()]
+    patches = [mpatches.Patch(color=METHOD_COLORS[m], label=m)
+               for m in METHOD_ORDER]
     fig.legend(handles=patches, loc="lower center", ncol=3,
                bbox_to_anchor=(0.5, -0.10), fontsize=FONT - 1, frameon=False)
 
@@ -318,12 +426,11 @@ def plot_transfer_performance(groups: dict, outdir: Path) -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def plot_rate_efficiency(groups: dict, all_records: list[dict], outdir: Path) -> None:
-    """Scatter: mean normalised performance (y) vs. mean allocated bits (x).
+    """Scatter: mean normalised performance (y) vs. eval empirical entropy (x).
 
-    FSQ/VQ are pinned at their nominal budget (no rate penalty → bits = max).
-    DDCL sits at its realised allocated bits (< nominal due to rate penalty).
-    One point per (env, method); env encoded by marker shape.
-    Vertical dashed line at FSQ/VQ nominal budget for each env group.
+    The x-axis is policy-conditioned eval entropy for every discrete method.
+    Codebook usage and allocated bits are diagnostics, not the cross-baseline
+    rate axis.
     """
     # env → marker
     env_markers = {
@@ -369,12 +476,10 @@ def plot_rate_efficiency(groups: dict, all_records: list[dict], outdir: Path) ->
             pm, hci_y = ci95(perf_vals)
             color     = METHOD_COLORS[method]
 
-            # bits: DDCL uses realised allocated_bits (with CI); FSQ/VQ use nominal
-            if method == "DDCL-Cos":
-                bit_vals = data.get("bits", [])
-                bm, hci_x = ci95(bit_vals) if bit_vals else (nom, float("nan"))
-            else:
-                bm, hci_x = nom, float("nan")
+            bit_vals = data.get("bits", [])
+            if not bit_vals:
+                continue
+            bm, hci_x = ci95(bit_vals)
 
             ax.errorbar(
                 bm, pm,
@@ -392,10 +497,6 @@ def plot_rate_efficiency(groups: dict, all_records: list[dict], outdir: Path) ->
                 zorder=3,
             )
 
-    # Nominal budget reference lines (de-emphasised so they don't dominate)
-    for nom_val in sorted(set(nom_bits_map.values())):
-        ax.axvline(nom_val, color="#BBBBBB", lw=0.6, ls=":", alpha=0.6, zorder=1)
-
     # ── Pareto frontier: per-environment (non-dominated within each env) ────────
     # Compute Pareto dominance separately for each environment so that a point
     # from one environment cannot "dominate" a point from a different environment.
@@ -403,7 +504,6 @@ def plot_rate_efficiency(groups: dict, all_records: list[dict], outdir: Path) ->
     S_OUTER = 130
     for env_key in ENV_KEYS:
         is_mw = "mw" in env_key
-        nom   = nom_bits_map.get(env_key, 2378)
         env_pf_x, env_pf_y, env_pf_color, env_pf_marker = [], [], [], []
         for method in METHOD_ORDER:
             key       = (env_key, method)
@@ -412,7 +512,9 @@ def plot_rate_efficiency(groups: dict, all_records: list[dict], outdir: Path) ->
             if not perf_vals:
                 continue
             pm, _ = ci95(perf_vals)
-            bm = statistics.mean(data["bits"]) if method == "DDCL-Cos" and data.get("bits") else nom
+            if not data.get("bits"):
+                continue
+            bm = statistics.mean(data["bits"])
             env_pf_x.append(bm)
             env_pf_y.append(pm)
             env_pf_color.append(METHOD_COLORS[method])
@@ -429,7 +531,7 @@ def plot_rate_efficiency(groups: dict, all_records: list[dict], outdir: Path) ->
                                s=S_INNER, linewidths=0, zorder=5)
 
     ax.set_xscale("log")
-    ax.set_xlabel("Allocated bits / transition (log scale)")
+    ax.set_xlabel("Eval empirical entropy / transition (log scale)")
     ax.set_ylabel("Normalised return / success")
     # Proportions are bounded [0, 1]; set axis viewport accordingly so that
     # error bars extending beyond 1 are clipped at the axis edge.
@@ -442,7 +544,7 @@ def plot_rate_efficiency(groups: dict, all_records: list[dict], outdir: Path) ->
         plt.Line2D([0], [0], marker="o", color="w",
                    markerfacecolor=c, markeredgecolor="none",
                    markersize=7, linestyle="None", label=m)
-        for m, c in METHOD_COLORS.items()
+        for m, c in ((m, METHOD_COLORS[m]) for m in METHOD_ORDER)
     ]
     env_handles = [
         plt.Line2D([0], [0], marker=env_markers[e], color="w",
@@ -526,19 +628,23 @@ def plot_codebook_usage(groups: dict, outdir: Path) -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def write_latex_table(groups: dict, outdir: Path) -> None:
-    """Write a LaTeX booktabs table with normalised return ± 95% CI."""
+    """Write a LaTeX booktabs table with score and eval entropy.
+
+    This helper is kept for regeneration, but paper users should still inspect
+    the generated table against ``private/Metrics/transfer_wandb_*`` before
+    submission.
+    """
     lines = [
         r"\begin{table}[t]",
         r"\centering\small",
-        r"\caption{Transfer-environment results (mean $\pm$ 95\% CI, $n{=}5$ seeds). "
-        r"Normalised return for DMControl; success rate for MetaWorld. "
-        r"DDCL-Cos uses the best $\lambda$ per environment "
-        r"($\lambda{=}0.001$ for Walker, Dog; $\lambda{=}0.01$ otherwise). "
-        r"Rate = mean allocated bits\,/\,transition (DDCL) or nominal budget (FSQ/VQ).}",
+        r"\caption{Transfer-environment results (mean $\pm$ 95\% CI; completed "
+        r"non-archive W\&B runs only; one planned run per seed). Normalised "
+        r"return for DMControl; success rate for MetaWorld. Parentheses report eval empirical entropy "
+        r"(kbits/transition), not allocated or nominal bits.}",
         r"\label{tab:transfer_results}",
         r"\begin{tabular}{lcccc}",
         r"\toprule",
-        r"Environment & FSQ-CE & VQ-CE & DDCL-Cos & DDCL bits (vs.\ nominal) \\",
+        r"Environment & FSQ-CE & VQ-CE & DDCL-Cos & DDCL-CE(s,d) \\",
         r"\midrule",
     ]
 
@@ -559,17 +665,12 @@ def write_latex_table(groups: dict, outdir: Path) -> None:
                 best_perf = m
                 best_idx  = mi
 
-        # DDCL bits column
-        ddcl_data  = groups.get((env_key, "DDCL-Cos"), {})
-        fsq_data   = groups.get((env_key, "FSQ-CE"),   {})
-        ddcl_bits  = statistics.mean(ddcl_data.get("bits", [0])) if ddcl_data.get("bits") else float("nan")
-        fsq_nom    = 4755 if env_key in ("dog/run", "humanoid/walk") else 2378
-        bits_pct   = f"{ddcl_bits:.0f} ({ddcl_bits/fsq_nom*100:.0f}\\%)" if not np.isnan(ddcl_bits) else "---"
-
         for mi, method in enumerate(METHOD_ORDER):
             data = groups.get((env_key, method), {})
             vals = data.get("suc" if is_mw else "nr", [])
+            bit_vals = data.get("bits", [])
             m, hci = ci95(vals) if vals else (float("nan"), float("nan"))
+            bm, _ = ci95(bit_vals) if bit_vals else (float("nan"), float("nan"))
             n = len(vals)
             if np.isnan(m):
                 cell = "---"
@@ -577,18 +678,18 @@ def write_latex_table(groups: dict, outdir: Path) -> None:
                 cell = f"{m:.3f} ($n={n}$)"
             else:
                 cell = f"{m:.3f}\\,{{\\small$\\pm$\\,{hci:.3f}}}"
+            if not np.isnan(bm):
+                cell += f" {{\\scriptsize({bm/1000:.2f})}}"
             if mi == best_idx and not np.isnan(m):
                 cell = r"\textbf{" + cell + "}"
             row_parts.append(cell)
 
-        row_parts.append(bits_pct)
         lines.append(" & ".join(row_parts) + r" \\")
 
     lines += [
         r"\bottomrule",
-        r"\multicolumn{5}{l}{\scriptsize $^*$Reacher/Dog/Humanoid FSQ/VQ use final"
-        r" checkpoint (no \texttt{eval\_best/} logged); DDCL uses best checkpoint."
-        r" Best--final gap $= +0.004\pm0.018$ (negligible, App.~H).} \\",
+        r"\multicolumn{5}{l}{\scriptsize Work in progress: additional DDCL "
+        r"Reacher runs may still be active; exclude running runs from stats.} \\",
         r"\end{tabular}",
         r"\end{table}",
     ]
@@ -624,23 +725,24 @@ def main() -> int:
     records = parse_runs(edges)
     print(f"  parsed {len(records)} finished records across transfer envs")
 
-    # Filter to best lambda per env for DDCL; keep all FSQ/VQ
-    selected = select_best_ddcl(records)
+    # Fixed-protocol view by default. Use select_best_ddcl(records) only for a
+    # separately labelled DDCL-Cos(best lambda) sensitivity plot.
+    selected = select_fixed_protocol(records)
 
     # Check coverage
     for env in ENV_KEYS:
         for m in METHOD_ORDER:
             key = (env, m)
             n = sum(1 for r in selected if r["env"] == env and r["method"] == m)
-            lam_str = f" λ={BEST_LAMBDA[env]}" if m == "DDCL-Cos" else ""
-            status  = "✅" if n == 5 else f"⚠️  {n}/5"
+            lam_str = ""
+            status  = "ok" if n == 5 else f"{n}/5"
             print(f"  {env:<22} {m}{lam_str:<18} {status}")
 
     groups = group_perf(selected)
 
     print("\nGenerating figures …")
     plot_transfer_performance(groups, args.outdir)
-    plot_rate_efficiency(groups, records, args.outdir)
+    plot_rate_efficiency(groups, selected, args.outdir)
     plot_codebook_usage(groups, args.outdir)
 
     print("\nGenerating LaTeX table …")

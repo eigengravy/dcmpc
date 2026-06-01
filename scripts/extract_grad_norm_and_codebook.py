@@ -97,7 +97,7 @@ def fetch_run_history(
 
         try:
             # Do NOT pass keys= — it causes history to return empty for some W&B versions.
-            # Fetch all columns and filter post-hoc.
+            # Fetch all columns and filter after download.
             hist_df = run.history(samples=n_samples)
             if hist_df.empty:
                 # Fall back to summary for scalar stats

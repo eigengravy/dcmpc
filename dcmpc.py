@@ -520,9 +520,11 @@ class WorldModel(nn.Module):
                     # m_det is always in [0, L-1] (no overflow by construction).
                     # m_adj can be -1 or L at grid boundaries — clamp it so
                     # scatter_add_ folds that probability into the boundary bin.
-                    max_bin = (n_levels_per_ch - 1)[None, None, None, :]
+                    max_bin = n_levels_per_ch - 1  # [num_channels]
+                    for _ in range(m_det.ndim - 1):
+                        max_bin = max_bin.unsqueeze(0)  # broadcast to [..., num_channels]
                     m_det_shifted = m_det
-                    m_adj_shifted = torch.clamp(m_adj, min=0).min(max_bin)
+                    m_adj_shifted = torch.minimum(torch.clamp(m_adj, min=0), max_bin)
 
                     # Joint soft label over the full group codebook (n_levels^n_dims entries).
                     #

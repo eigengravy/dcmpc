@@ -81,17 +81,19 @@ python train.py env=walker-walk agent=fsq_5x5x5
 
 You can also override individual DDCL parameters directly:
 ``` sh
-python train.py env=walker-walk ++agent.quantizer=ddcl ++agent.ddcl_n_dims=4 ++agent.ddcl_delta=0.5 ++agent.ddcl_scale=3.5 ++agent.ddcl_lambda=1e-3
+python train.py env=walker-walk agent=ddcl_ce agent.ddcl_deltas='[0.4,0.4]' agent.ddcl_scales='[0.8,0.8]' agent.ddcl_lambda=1e-3
 ```
 
 | Parameter | Default | Description |
 |---|---|---|
 | `agent.quantizer` | `fsq` | Quantizer type: `fsq`, `ddcl`, `vq`, or `none` |
-| `agent.ddcl_n_dims` | `2` | DDCL group size (`latent_dim` must be divisible by this) |
-| `agent.ddcl_delta` | `1.0` | DDCL quantization bin width |
-| `agent.ddcl_scale` | `3.5` | DDCL tanh pre-scaling factor |
+| `agent.ddcl_deltas` | `[0.4, 0.667]` | Per-channel bin widths (list; length = num_channels) |
+| `agent.ddcl_scales` | `[0.8, 0.667]` | Per-channel tanh pre-scaling factors |
 | `agent.ddcl_lambda` | `1e-3` | DDCL communication cost weight |
 | `agent.consistency_loss` | `cross-entropy` | Consistency loss: `cross-entropy`, `mse`, or `cosine` |
+| `agent.ddcl_deterministic_eval` | `true` | Disable dither during planning/eval |
+| `agent.ddcl_deterministic_targets` | `true` | Disable dither for training targets |
+| `agent.plan_unc_prop_mode` | `weighted-avg` | Planning propagation: `weighted-avg` or `mode` (CE/SCE only) |
 
 ### Slurm multi-run
 
@@ -103,6 +105,56 @@ This uses `utils/cluster_utils.py/SlurmConfig` to configure the jobs, setting `t
 If you want to run the job for longer (e.g 48hrs), you can use the following
 ``` sh
 python train.py -m env=walker-walk ++use_wandb=True ++agent.batch_size=256,512 ++agent.lr=1e-4,1e-4 ++hydra.launcher.timeout_min=2880
+```
+
+## Project structure
+
+```
+dcmpc/
+├── train.py                  # Training entrypoint (Hydra)
+├── eval.py                   # Checkpoint re-evaluation
+├── dcmpc.py                  # WorldModel: encoder, quantizer, dynamics, loss, planning
+├── config.py                 # Agent configs (Hydra ConfigStore dataclasses)
+│
+├── cfgs/env/                 # Environment YAML configs
+│   ├── toy-precision-gate-final.yaml
+│   ├── walker-walk.yaml, reacher-hard.yaml, dog-run.yaml, ...
+│   └── mw-button-press.yaml, ...
+│
+├── envs/                     # Environment wrappers
+│   ├── toy_precision_gate.py # Precision-gate diagnostic environment
+│   ├── dmcontrol.py          # DeepMind Control Suite
+│   └── metaworld.py          # Meta-World
+│
+├── utils/
+│   ├── layers.py             # DDCLQuantizer, NormedLinear, SimNorm
+│   ├── buffers.py            # ReplayBuffer
+│   ├── evaluate.py           # Evaluation loop
+│   └── helper.py             # Misc utilities
+│
+├── scripts/                  # Launch, eval, metric extraction, plotting scripts
+│   ├── run_toy_*.sh          # Toy experiment launchers
+│   ├── run_dmcontrol_*.sh    # DMControl launchers
+│   ├── run_metaworld_*.sh    # Meta-World launchers
+│   ├── reevaluate_*.sh       # Checkpoint re-evaluation
+│   ├── measure_*.py          # Rate metric computation
+│   ├── extract_*.py          # W&B metric extraction
+│   ├── gen_*_fig.py          # Paper figure generation
+│   └── slurm_*.sh            # SLURM cluster launchers
+│
+├── tests/                    # Unit tests (42 tests)
+│   ├── test_ddcl_quantizer.py
+│   ├── test_soft_ce_labels.py
+│   └── test_metric_invariants.py
+│
+├── results/
+│   ├── data/                 # Published baseline CSVs (DreamerV3, SAC, TD-MPC, TD-MPC2)
+│   └── plotting/             # Jupyter notebooks + paper plot scripts
+│
+├── docs/specs/               # Design specs
+├── singularity/              # Container definition for cluster
+├── REPRODUCING.md            # Full reproduction workflow
+└── SINGULARITY.md            # Container setup instructions
 ```
 
 # BibTeX

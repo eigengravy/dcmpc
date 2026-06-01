@@ -74,44 +74,120 @@ FIXED_FEATURES = [1.0, 0.0, 0.08, 0.0, 0.0]  # goal_x, goal_y, gate_width, cross
 PARETO_JSON = Path("private/Metrics/Toy/QuantizerPareto/pareto_sweep_aggregated.json")
 OUT_DIR = Path("private/Metrics/Toy/Corrected Reevaluation")
 
-# ── Canonical methods (best seed=0 from final_v1 + ddcl_objective_sweep) ─────
-#   path is RELATIVE to dcmpc/ root; method key for JSON output
-CANONICAL_METHODS = [
+# ── Canonical paper methods (all completed paper-used toy seeds) ─────────────
+# Paths are relative to the dcmpc/ root.  These are intentionally explicit:
+# the paper tables should not silently change when old experimental folders are
+# present in output/.
+CANONICAL_METHOD_FAMILIES = [
     {
         "key": "ddcl_cosine",
         "label": "DDCL-Cos",
-        "run_dir": "output/toy_runs/ddcl_objective_sweep_20260514_073320/hydra/"
-                   "toy-precision-gate-final--ddcl_mse--jepa-cosine-det-eval-wavg-targets-s35-l1e3--s0",
+        "run_dirs": [
+            "output/toy_runs/ddcl_objective_sweep_20260514_073320/hydra/"
+            f"toy-precision-gate-final--ddcl_mse--jepa-cosine-det-eval-wavg-targets-s35-l1e3--s{s}"
+            for s in [0, 1, 2]
+        ] + [
+            "output/toy_runs/ddcl_objective_completion_20260516_131900/hydra/"
+            f"toy-precision-gate-final--ddcl_mse--jepa-cosine-det-eval-wavg-targets-s35-l1e3--s{s}"
+            for s in [3, 4]
+        ],
     },
     {
         "key": "ddcl_mse",
         "label": "DDCL-MSE",
-        "run_dir": "output/toy_runs/ddcl_objective_sweep_20260514_073320/hydra/"
-                   "toy-precision-gate-final--ddcl_mse--mse-det-eval-wavg-targets-s35-l1e3--s0",
+        "run_dirs": [
+            "output/toy_runs/ddcl_objective_sweep_20260514_073320/hydra/"
+            f"toy-precision-gate-final--ddcl_mse--mse-det-eval-wavg-targets-s35-l1e3--s{s}"
+            for s in [0, 1, 2]
+        ] + [
+            "output/toy_runs/ddcl_objective_completion_20260516_131900/hydra/"
+            f"toy-precision-gate-final--ddcl_mse--mse-det-eval-wavg-targets-s35-l1e3--s{s}"
+            for s in [3, 4]
+        ],
+    },
+    {
+        "key": "ddcl_soft_ce",
+        "label": "DDCL-SCE",
+        "run_dirs": [
+            "output/toy_runs/ddcl_soft_ce_20260518_165818/hydra/"
+            f"toy-precision-gate-final--ddcl_soft_ce--s{s}"
+            for s in [0, 1, 2, 3, 4]
+        ],
     },
     {
         "key": "ddcl_ce",
         "label": "DDCL-CE",
-        "run_dir": "output/toy_runs/final_v1_20260512_234000/hydra/"
-                   "toy-precision-gate-final--ddcl_ce--s0",
+        "run_dirs": [
+            "output/toy_runs/final_v1_20260512_234000/hydra/"
+            f"toy-precision-gate-final--ddcl_ce--s{s}"
+            for s in [0, 1, 2, 3, 4]
+        ],
     },
     {
         "key": "fsq_ce",
         "label": "FSQ-CE",
-        "run_dir": "output/toy_runs/final_v1_20260512_234000/hydra/"
-                   "toy-precision-gate-final--dcmpc--s0",
+        "run_dirs": [
+            "output/toy_runs/final_v1_20260512_234000/hydra/"
+            f"toy-precision-gate-final--dcmpc--s{s}"
+            for s in [0, 1, 2, 3, 4]
+        ],
     },
     {
         "key": "vq_ce",
         "label": "VQ-CE",
-        "run_dir": "output/toy_runs/final_v1_20260512_234000/hydra/"
-                   "toy-precision-gate-final--vq_ce--s0",
+        "run_dirs": [
+            "output/toy_runs/final_v1_20260512_234000/hydra/"
+            f"toy-precision-gate-final--vq_ce--s{s}"
+            for s in [0, 1, 2, 3, 4]
+        ],
     },
     {
         "key": "continuous_mse",
         "label": "Cont-MSE",
-        "run_dir": "output/toy_runs/final_v1_20260512_234000/hydra/"
-                   "toy-precision-gate-final--continuous_mse--s0",
+        "run_dirs": [
+            "output/toy_runs/final_v1_20260512_234000/hydra/"
+            f"toy-precision-gate-final--continuous_mse--s{s}"
+            for s in [0, 1, 2, 3, 4]
+        ],
+    },
+]
+
+STOCHASTICITY_METHOD_FAMILIES = [
+    {
+        "key": "ddcl_ce_stoch",
+        "label": "DDCL-CE(s,s)",
+        "run_dirs": [
+            "output/toy_runs/ddcl_stoch_ablation_20260519_210503/hydra/"
+            f"toy-precision-gate-final--ddcl_ce_stoch--s{s}"
+            for s in [0, 1, 2, 3, 4]
+        ],
+    },
+    {
+        "key": "ddcl_ce_stoch_eval",
+        "label": "DDCL-CE(s,d)",
+        "run_dirs": [
+            "output/toy_runs/ddcl_stoch_ablation_20260519_210503/hydra/"
+            f"toy-precision-gate-final--ddcl_ce_stoch_eval--s{s}"
+            for s in [0, 1, 2, 3, 4]
+        ],
+    },
+    {
+        "key": "ddcl_ce_stoch_tgt",
+        "label": "DDCL-CE(d,s)",
+        "run_dirs": [
+            "output/toy_runs/ddcl_stoch_ablation_20260519_210503/hydra/"
+            f"toy-precision-gate-final--ddcl_ce_stoch_tgt--s{s}"
+            for s in [0, 1, 2, 3, 4]
+        ],
+    },
+    {
+        "key": "ddcl_cos_stoch_eval",
+        "label": "DDCL-Cos(s,d)",
+        "run_dirs": [
+            "output/toy_runs/ddcl_stoch_ablation_20260519_210503/hydra/"
+            f"toy-precision-gate-final--ddcl_cos_stoch_eval--s{s}"
+            for s in [0, 1, 2, 3, 4]
+        ],
     },
 ]
 
@@ -338,6 +414,50 @@ def extract_performance(pareto_data: dict, method_type: str, key: str) -> dict:
     return metrics
 
 
+def _mean_ci95(values: list[float]) -> dict:
+    """Return n/mean/std/95% t-CI for finite values."""
+    vals = [float(v) for v in values if np.isfinite(float(v))]
+    n = len(vals)
+    if n == 0:
+        return {"n": 0, "values": [], "mean": float("nan"), "std": float("nan"), "ci95": float("nan")}
+    if n == 1:
+        return {"n": 1, "values": vals, "mean": vals[0], "std": 0.0, "ci95": 0.0}
+    arr = np.array(vals, dtype=float)
+    # t critical values for the small n used here. Fall back to normal approx.
+    tcrit = {
+        1: 12.706204736432095,
+        2: 4.302652729749464,
+        3: 3.182446305284263,
+        4: 2.7764451051977987,
+        5: 2.570581835636305,
+        6: 2.4469118511449692,
+        7: 2.3646242510102993,
+        8: 2.3060041350333704,
+        9: 2.2621571628540993,
+        10: 2.2281388519649385,
+    }.get(n - 1, 1.959963984540054)
+    std = float(arr.std(ddof=1))
+    ci95 = float(tcrit * std / math.sqrt(n))
+    return {"n": n, "values": vals, "mean": float(arr.mean()), "std": std, "ci95": ci95}
+
+
+def _summarise_seed_rates(seed_entries: list[dict]) -> dict:
+    keys = [
+        "bits_per_transition",
+        "bits_per_group",
+        "nominal_bits",
+        "compression_ratio",
+    ]
+    summary = {}
+    for key in keys:
+        summary[key] = _mean_ci95([
+            entry["rate"].get(key, float("nan"))
+            for entry in seed_entries
+            if entry.get("rate", {}).get("has_discrete", False)
+        ])
+    return summary
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--n_x", type=int, default=30, help="Grid points along x")
@@ -366,6 +486,8 @@ def main():
             "n_y": args.n_y,
             "n_obs": N,
             "obs_dim": OBS_DIM,
+            "rate_metric": "R_m(D_ref) = sum_g H[codes_g(s)], s ~ shared toy grid, epsilon=0",
+            "canonical_policy": "aggregate all listed completed paper-used toy seeds; continuous models have no discrete rate",
             "fixed_features": {"goal_x": 1.0, "goal_y": 0.0,
                                 "gate_width": 0.08, "crossed_gate": 0, "collided": 0},
             "state_box": {"pos_x": [POS_X_LO, POS_X_HI],
@@ -377,26 +499,82 @@ def main():
 
     # ── Canonical methods ──────────────────────────────────────────────────────
     if not args.pareto_only:
-        print("\n── Canonical methods (realized rate on D_ref) ────────────────────")
-        for spec in CANONICAL_METHODS:
-            print(f"\n  [{spec['label']}] loading {spec['run_dir']} ...")
-            agent = load_agent_from_run_dir(spec["run_dir"], args.device)
-            if agent is None:
-                continue
-            rate_info = compute_realized_rate(agent, d_ref)
-            if rate_info["has_discrete"]:
-                print(f"    realized H = {rate_info['bits_per_transition']:.2f} bits/trans"
-                      f"  (nominal {rate_info['nominal_bits']:.1f},"
-                      f" compression {rate_info['compression_ratio']:.2f}×,"
-                      f" n_groups={rate_info['n_groups']}, cb_size={rate_info['codebook_size']})")
+        print("\n── Canonical methods (realized rate on D_ref; all listed seeds) ───")
+        for spec in CANONICAL_METHOD_FAMILIES:
+            seed_entries = []
+            print(f"\n  [{spec['label']}] {len(spec['run_dirs'])} seed/checkpoint dirs")
+            for run_dir in spec["run_dirs"]:
+                print(f"    loading {run_dir} ...")
+                agent = load_agent_from_run_dir(run_dir, args.device)
+                if agent is None:
+                    seed_entries.append({
+                        "run_dir": run_dir,
+                        "status": "missing_or_load_failed",
+                        "rate": {"has_discrete": False, "bits_per_transition": float("nan")},
+                    })
+                    continue
+                rate_info = compute_realized_rate(agent, d_ref)
+                if rate_info["has_discrete"]:
+                    print(f"      H = {rate_info['bits_per_transition']:.2f} bits/trans")
+                else:
+                    print("      continuous (no quantizer)")
+                seed_entries.append({
+                    "run_dir": run_dir,
+                    "status": "ok",
+                    "rate": rate_info,
+                })
+                del agent
+
+            ok_entries = [e for e in seed_entries if e.get("status") == "ok"]
+            summary = _summarise_seed_rates(ok_entries)
+            if ok_entries and ok_entries[0]["rate"].get("has_discrete", False):
+                b = summary["bits_per_transition"]
+                print(f"    mean H = {b['mean']:.2f} ± {b['ci95']:.2f} bits/trans (n={b['n']})")
+                representative_rate = dict(ok_entries[0]["rate"])
+                representative_rate["bits_per_transition"] = b["mean"]
+                representative_rate["bits_per_transition_ci95"] = b["ci95"]
             else:
-                print(f"    continuous (no quantizer) — rate = NaN")
+                representative_rate = {
+                    "bits_per_transition": float("nan"),
+                    "bits_per_transition_ci95": float("nan"),
+                    "has_discrete": False,
+                }
             results["canonical"][spec["key"]] = {
                 "label": spec["label"],
-                "run_dir": spec["run_dir"],
-                "rate": rate_info,
+                "run_dirs": spec["run_dirs"],
+                "seeds": seed_entries,
+                "summary": summary,
+                # Backwards-compatible convenience field for older consumers.
+                "rate": representative_rate,
             }
-            del agent
+
+        print("\n── Stochasticity ablation methods (realized rate on D_ref) ────────")
+        results["stochasticity"] = {}
+        for spec in STOCHASTICITY_METHOD_FAMILIES:
+            seed_entries = []
+            print(f"\n  [{spec['label']}] {len(spec['run_dirs'])} seed/checkpoint dirs")
+            for run_dir in spec["run_dirs"]:
+                agent = load_agent_from_run_dir(run_dir, args.device)
+                if agent is None:
+                    seed_entries.append({
+                        "run_dir": run_dir,
+                        "status": "missing_or_load_failed",
+                        "rate": {"has_discrete": False, "bits_per_transition": float("nan")},
+                    })
+                    continue
+                rate_info = compute_realized_rate(agent, d_ref)
+                print(f"      H = {rate_info.get('bits_per_transition', float('nan')):.2f} bits/trans")
+                seed_entries.append({"run_dir": run_dir, "status": "ok", "rate": rate_info})
+                del agent
+            summary = _summarise_seed_rates([e for e in seed_entries if e.get("status") == "ok"])
+            b = summary["bits_per_transition"]
+            print(f"    mean H = {b['mean']:.2f} ± {b['ci95']:.2f} bits/trans (n={b['n']})")
+            results["stochasticity"][spec["key"]] = {
+                "label": spec["label"],
+                "run_dirs": spec["run_dirs"],
+                "seeds": seed_entries,
+                "summary": summary,
+            }
 
     # ── Pareto methods ─────────────────────────────────────────────────────────
     if not args.canonical_only:
@@ -448,10 +626,12 @@ def main():
     print(f"  {'Method':<30} {'Realized H':>12} {'Nominal':>10} {'Ratio':>8}")
     print(f"  {'-'*30} {'-'*12} {'-'*10} {'-'*8}")
     for key, entry in results["canonical"].items():
-        r = entry["rate"]
+        r = entry.get("rate", {})
         if r["has_discrete"]:
+            ci = r.get("bits_per_transition_ci95", 0.0)
             print(f"  {entry['label']:<30} {r['bits_per_transition']:>12.1f} "
-                  f"{r['nominal_bits']:>10.1f} {r['compression_ratio']:>8.2f}×")
+                  f"{r['nominal_bits']:>10.1f} {r['compression_ratio']:>8.2f}×"
+                  f"  ±{ci:.1f}")
         else:
             print(f"  {entry['label']:<30} {'(continuous)':>12}")
 
